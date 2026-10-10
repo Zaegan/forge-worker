@@ -65,22 +65,73 @@ function campaigns($DATA, $db) {
     return $out;
 }
 
+// The order in which campaigns are offered work. Campaigns with a weight share the workers in proportion to it (a
+// weighted random order, drawn again for every job), so no line of work starves; campaigns without one (priority <= 0:
+// filler) only get work when no weighted campaign has any, highest priority first.
+//   DATA/priorities.json {"<substring of a campaign's meta.run path>": priority}   overrides meta.priority
+//   DATA/weights.json    {"<substring of meta.run>": weight}   the longest matching substring names the campaign's
+//       group (one line of work: its campaigns split the group's weight); without a match, priority > 0 gives
+//       weight priority / 5 for the campaign alone
+function weights_of($DATA, $camps) {
+    $ov = @json_decode(@file_get_contents("$DATA/priorities.json") ?: '{}', true) ?: [];
+    $wt = @json_decode(@file_get_contents("$DATA/weights.json") ?: '{}', true) ?: [];
+    $out = [];
+    foreach ($camps as $n => $m) {
+        $run = $m['run'] ?? '';
+        $pr = intval($m['priority'] ?? 0);
+        foreach ($ov as $pat => $p) if ($run !== '' && str_contains($run, $pat)) $pr = intval($p);
+        $key = null; $w = 0.0;
+        foreach ($wt as $pat => $x)
+            if ($run !== '' && str_contains($run, $pat) && ($key === null || strlen($pat) > strlen($key))) { $key = $pat; $w = floatval($x); }
+        if ($key === null && $pr > 0) { $key = "campaign:$n"; $w = $pr / 5.0; }
+        $out[$n] = ['priority' => $pr, 'group' => $key, 'weight' => $w];
+    }
+    return $out;
+}
+
+function order_campaigns($camps, $wts, $open) {
+    $groups = [];   // group -> its campaigns with open games
+    $rest = [];
+    foreach ($camps as $n => $m) {
+        if (!empty($m['withdrawn']) || empty($open[$n])) continue;
+        $w = $wts[$n];
+        if ($w['weight'] > 0) $groups[$w['group']][] = $n; else $rest[] = $n;
+    }
+    // weighted random order of the groups (Efraimidis-Spirakis: key u^(1/w), largest first)
+    $key = [];
+    foreach ($groups as $g => $ns) $key[$g] = pow(mt_rand(1, mt_getrandmax()) / mt_getrandmax(), 1.0 / $wts[$ns[0]]['weight']);
+    arsort($key);
+    $order = [];
+    foreach (array_keys($key) as $g) {
+        $ns = $groups[$g];
+        usort($ns, fn($x, $y) => $wts[$y]['priority'] <=> $wts[$x]['priority']);   // within a group: priority
+        array_push($order, ...$ns);
+    }
+    $rnd = []; foreach ($rest as $n) $rnd[$n] = mt_rand();
+    usort($rest, fn($x, $y) => ($wts[$y]['priority'] <=> $wts[$x]['priority']) ?: ($rnd[$x] <=> $rnd[$y]));
+    return array_merge($order, $rest);
+}
+
+function open_counts($db) {
+    $open = [];
+    $r = $db->query("select campaign, count(*) from games where status='open' group by campaign");
+    while ($row = $r->fetchArray(SQLITE3_NUM)) $open[$row[0]] = $row[1];
+    return $open;
+}
+
 $a = $_GET['a'] ?? '';
 if ($a === 'job') {
     if (intval($_GET['v'] ?? 0) < $MIN_CLIENT) out(426, ['error' => 'please update forge-worker']);
     $slots = max(1, min(64, intval($_GET['slots'] ?? 1)));
     $camps = campaigns($DATA, $db);
-    // DATA/priorities.json {"<substring of a campaign's meta.run path>": priority}: steer whole lines of work
-    $ov = @json_decode(@file_get_contents("$DATA/priorities.json") ?: '{}', true) ?: [];
-    foreach ($camps as $n => $m) foreach ($ov as $pat => $pr)
-        if (isset($m['run']) && str_contains($m['run'], $pat)) $camps[$n]['priority'] = intval($pr);
-    // highest priority first; among equal priorities a random order, so several experiments share the workers
-    $rnd = []; foreach ($camps as $n => $m) $rnd[$n] = mt_rand();
-    uksort($camps, fn($x, $y) => (($camps[$y]['priority'] ?? 0) <=> ($camps[$x]['priority'] ?? 0)) ?: ($rnd[$x] <=> $rnd[$y]));
+    $wts = weights_of($DATA, $camps);
     $now = microtime(true);
     $db->exec('begin immediate');
     $db->exec("update games set status='open', job=null, worker=null where status='leased' and lease_until < $now");
-    foreach ($camps as $name => $meta) {
+    $order = order_campaigns($camps, $wts, open_counts($db));
+    foreach ($order as $name) {
+        $meta = $camps[$name];
+        $meta['priority'] = $wts[$name]['priority'];
         if (!empty($meta['withdrawn'])) continue;
         $per = intval($meta['per_slot'] ?? $PER_SLOT);
         $lease = intval($meta['lease_s'] ?? $LEASE);
@@ -179,6 +230,22 @@ if ($a === 'withdrawn') {   // campaigns whose not-yet-started games workers sho
         if (!empty($m['withdrawn'])) $w[] = basename(dirname($f));
     }
     out(200, ['withdrawn' => $w]);
+}
+
+if ($a === 'shares') {   // expected share of jobs per group right now: 2000 simulated draws, nothing leased
+    $camps = campaigns($DATA, $db);
+    $wts = weights_of($DATA, $camps);
+    $open = open_counts($db);
+    $first = [];
+    for ($i = 0; $i < 2000; $i++) {
+        $o = order_campaigns($camps, $wts, $open);
+        if (!$o) break;
+        $g = $wts[$o[0]]['group'] ?? "fallback:$o[0]";
+        $first[$g] = ($first[$g] ?? 0) + 1;
+    }
+    arsort($first);
+    foreach ($first as $g => $c) $first[$g] = round($c / 2000, 3);
+    out(200, ['shares' => $first]);
 }
 
 if ($a === 'status') {
