@@ -15,7 +15,7 @@
 umask(0);
 $DATA = getenv('FORGE_DATA') ?: realpath(__DIR__ . '/../../uploads') . '/forge';
 $LEASE = 1800;
-$PER_SLOT = 4;
+$PER_SLOT = 25;
 
 function out($code, $obj = null) {
     http_response_code($code);
@@ -110,11 +110,15 @@ if ($a === 'result' && $_SERVER['REQUEST_METHOD'] === 'POST') {
     file_put_contents($tmp, file_get_contents('php://input'));
     $z = new ZipArchive();
     if ($z->open($tmp) !== true) { unlink($tmp); out(400, ['error' => 'bad archive']); }
+    // Windows PowerShell 5.1's Compress-Archive writes "logs\x.log": accept "\" as a separator, normalise to "/"
+    $entries = [];
     for ($i = 0; $i < $z->numFiles; $i++) {
-        $n = $z->getNameIndex($i);
-        if (str_starts_with($n, '/') || str_contains($n, '..') || str_contains($n, '\\')) { unlink($tmp); out(400, ['error' => 'bad path']); }
+        $n = str_replace('\\', '/', $z->getNameIndex($i));
+        if (str_starts_with($n, '/') || str_contains($n, '..') || str_contains($n, ':')) { unlink($tmp); out(400, ['error' => 'bad path']); }
+        $entries[$i] = $n;
     }
-    $res = $z->getFromName('results.jsonl');
+    $ri = array_search('results.jsonl', $entries, true);
+    $res = $ri === false ? false : $z->getFromIndex($ri);
     if ($res === false) { unlink($tmp); out(400, ['error' => 'no results.jsonl']); }
     $now = microtime(true); $acc = 0; $dup = 0;
     $db->exec('begin immediate');
@@ -136,7 +140,11 @@ if ($a === 'result' && $_SERVER['REQUEST_METHOD'] === 'POST') {
     $part = intval($_GET['part'] ?? 0);
     $dest = "$DATA/campaigns/$camp/results/" . preg_replace('/[^A-Za-z0-9_.-]/', '_', $worker) . "/$job" . ($part ? "_p$part" : '') . ($acc ? '' : '.duplicate');
     @mkdir($dest, 0777, true);
-    $z->extractTo($dest);
+    foreach ($entries as $i => $n) {
+        if (str_ends_with($n, '/')) continue;
+        @mkdir(dirname("$dest/$n"), 0777, true);
+        file_put_contents("$dest/$n", $z->getFromIndex($i));
+    }
     $z->close();
     unlink($tmp);
     out(200, ['accepted' => $acc, 'duplicates' => $dup]);
