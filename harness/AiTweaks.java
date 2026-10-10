@@ -31,8 +31,8 @@ import java.util.List;
  *
  * leyline — LeylineBrain's lethal pump turn and Burn Together for Izzet Leyline.
  * leylinespend — with leyline: on non-lethal turns, spend surplus mana on damage pumps for evasive/unblocked attackers.
- * leylinemull — Izzet Leyline's mulligans (LeylineBrain.keepHand): the 7-card hand needs Leyline of Resonance, a
- * creature and a land; after one mulligan a creature and a land; after two a land; after three any hand is kept.
+ * leylinemull[A-D] — Izzet Leyline's mulligans (LeylineBrain.keepHand; A, the default: the 7-card hand needs Leyline
+ * of Resonance, a creature and a land; after one mulligan a creature and a land; after two a land; then keep).
  *
  * landfall — LandfallBrain's Escape Tunnel + Mightform Harmonizer kill for Mono-Green Landfall.
  *

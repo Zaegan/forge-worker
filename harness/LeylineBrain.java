@@ -269,20 +269,47 @@ public class LeylineBrain {
     }
 
     /**
-     * Tweak "leylinemull" (the user's rule, 2026-10-10): each mulligan drops the strictest requirement. MULLIGANS taken so
-     * far: 0 -> Leyline of Resonance + a creature + a land; 1 -> a creature + a land; 2 -> a land; 3+ -> keep.
+     * Tweak "leylinemull[A-D]" (the user's rule, 2026-10-10, and variants): each mulligan drops the strictest
+     * requirement. A (default): 7 cards -> Leyline of Resonance + a creature + a land; 6 -> a creature + a land;
+     * 5 -> a land. B (literal): 7 -> Leyline; 6 -> a creature; 5 -> a land. C: 7 -> Leyline + a land, then as A.
+     * D: as A with two lands. After three mulligans any hand is kept.
      * (measure-leyline-brain: a Leyline in the opening hand was worth +11 to +25 points per matchup.)
      */
     static boolean keepHand(Player me, int mulligans) {
-        boolean ley = false, body = false, land = false;
+        boolean ley = false, body = false;
+        int lands = 0;
         for (Card c : me.getCardsIn(ZoneType.Hand)) {
             if (named(c, LEYLINE)) ley = true;
             if (c.isCreature()) body = true;
-            if (c.isLand()) land = true;
+            if (c.isLand()) lands++;
         }
-        boolean keep = mulligans >= 3 || (land && (mulligans >= 2 || (body && (mulligans >= 1 || ley))));
-        ControlBrain.count("leyline_mull_" + mulligans + (keep ? "_keep" : "_mull"));
+        char v = mullVariant();
+        boolean keep;
+        if (mulligans >= 3) keep = true;
+        else switch (v) {
+            case 'B':   // literal: one requirement per hand
+                keep = mulligans == 0 ? ley : mulligans == 1 ? body : lands >= 1;
+                break;
+            case 'C':   // 7: Leyline + land; 6: creature + land; 5: land
+                keep = lands >= 1 && (mulligans >= 2 || (mulligans == 1 ? body : ley));
+                break;
+            case 'D':   // as A with two lands
+                keep = lands >= 2 && (mulligans >= 2 || (body && (mulligans >= 1 || ley)));
+                break;
+            default:    // 'A' cumulative: 7: Leyline + creature + land; 6: creature + land; 5: land
+                keep = lands >= 1 && (mulligans >= 2 || (body && (mulligans >= 1 || ley)));
+        }
+        ControlBrain.count("leyline_mull" + v + "_" + mulligans + (keep ? "_keep" : "_mull"));
         return keep;
+    }
+
+    /** The variant letter of tweak "leylinemullX" (A when no letter follows). */
+    static char mullVariant() {
+        String t = AiTweaks.TWEAKS;
+        int i = t.indexOf("leylinemull");
+        if (i < 0) return 'A';
+        int j = i + "leylinemull".length();
+        return j < t.length() && Character.isUpperCase(t.charAt(j)) ? t.charAt(j) : 'A';
     }
 
     /** London mulligan bottom: Forge's choice, but never a Leyline of Resonance, nor the last creature or last land. */
