@@ -31,6 +31,17 @@ import java.util.List;
  * Damage counted: the target's pumped power plus the power of our other unblockable or unblocked attackers. Spells
  * are budgeted against the available mana estimate, adds first, Bulk Up (double) last. Only decks with these cards are
  * affected; counts in ControlBrain.counts.
+ *
+ * Tweak "leylinespend" (with leyline): when no lethal plan exists, spend SURPLUS mana on damage pumps instead of
+ * holding them (runs measure-leyline-brain: ~3.5 pump spells drawn and never cast per loss, Pym Particles cast 7%,
+ * opponent at a median 15-20 life when we die). A pump adds about the same damage whenever it is cast, and mana is
+ * short, so unspent mana on an unblocked attacker is damage thrown away. Surplus = untapped mana lands minus the mana
+ * value of the cheapest creature card in hand (that creature is cast first). One spell per priority:
+ * - main 1, sorceries: Pym Particles on an attacker the opponent can block (it becomes unblockable and draws);
+ *   Ancestral Anger / Wild Ride on an attacker the opponent cannot block. The target is then made to attack.
+ * - declare blockers step (our attack), instants: Turn Inside Out, Might of the Meek, Bulk Up on an unblocked attacker.
+ * Protection spells (Shore Up, Octopus Form, Secret Identity) are kept. Slickshot Show-Off is the preferred target
+ * (+2/+0 per noncreature spell).
  */
 public class LeylineBrain {
     static final String LEYLINE = "Leyline of Resonance", SHOWOFF = "Slickshot Show-Off", OTTER = "Elusive Otter",
@@ -231,7 +242,7 @@ public class LeylineBrain {
                 ControlBrain.snapshot(me, b.toString());
                 return next(p, t);
             }
-            return null;
+            return AiTweaks.TWEAKS.contains("leylinespend") ? spend(me, op, ph, mana) : null;
         }
         if (ph == PhaseType.COMBAT_DECLARE_BLOCKERS) {
             Combat cb = g.getCombat();
@@ -251,6 +262,50 @@ public class LeylineBrain {
                 if (p.power + other - t.getNetPower() < op.getLife()) continue;
                 ControlBrain.count("leyline_blockers");
                 return next(p, t);
+            }
+            if (AiTweaks.TWEAKS.contains("leylinespend")) return spend(me, op, ph, mana);
+        }
+        return null;
+    }
+
+    static final java.util.Set<String> SPEND_MAIN1 = java.util.Set.of(PYM, ANGER, "Wild Ride"),
+            SPEND_COMBAT = java.util.Set.of("Turn Inside Out", "Might of the Meek", BULK);
+
+    /** Non-lethal turns: one damage pump on an evasive/unblocked attacker, paid from surplus mana only. */
+    static SpellAbility spend(Player me, Player op, PhaseType ph, int mana) {
+        int reserve = Integer.MAX_VALUE;
+        for (Card c : me.getCardsIn(ZoneType.Hand)) if (c.isCreature()) reserve = Math.min(reserve, (int) c.getCMC());
+        if (reserve == Integer.MAX_VALUE || reserve > mana) reserve = 0;   // nothing castable to keep mana for
+        int surplus = mana - reserve;
+        if (surplus <= 0) return null;
+        List<Card> targets = new ArrayList<>();
+        Game g = me.getGame();
+        if (ph == PhaseType.MAIN1) {
+            for (Card c : me.getCreaturesInPlay()) if (canAttackNow(c)) targets.add(c);
+        } else {
+            Combat cb = g.getCombat();
+            if (cb == null) return null;
+            for (Card a : cb.getAttackers()) if (a.getController() == me && !cb.isBlocked(a)) targets.add(a);
+        }
+        targets.sort((x, y) -> Boolean.compare(named(y, SHOWOFF), named(x, SHOWOFF)) != 0
+                ? Boolean.compare(named(y, SHOWOFF), named(x, SHOWOFF)) : Integer.compare(y.getNetPower(), x.getNetPower()));
+        for (Card t : targets) {
+            boolean free = ph != PhaseType.MAIN1 || unblockable(t, op);
+            for (Step st : pumps(me, t, ph != PhaseType.MAIN1)) {
+                if (st.cost > surplus) continue;
+                if (ph == PhaseType.MAIN1) {
+                    if (!SPEND_MAIN1.contains(st.name)) continue;
+                    if (st.name.equals(PYM) == free) continue;   // Pym only where it makes the attacker unblockable
+                    if (plannedGame != g || plannedTurn != g.getPhaseHandler().getTurn()) planned.clear();
+                    planned.add(t);   // forceAttack: the pumped creature attacks
+                    plannedGame = g;
+                    plannedTurn = g.getPhaseHandler().getTurn();
+                } else if (!SPEND_COMBAT.contains(st.name)) continue;
+                if (st.name.equals(BULK) && t.getNetPower() < 2) continue;
+                ControlBrain.count(ph == PhaseType.MAIN1 ? "leyline_spend_main1" : "leyline_spend_combat");
+                st.sa.resetTargets();
+                st.sa.getTargets().add(t);
+                return st.sa;
             }
         }
         return null;

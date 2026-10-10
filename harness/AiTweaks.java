@@ -30,6 +30,7 @@ import java.util.List;
  * no Great Hall animation, shocklands).
  *
  * leyline — LeylineBrain's lethal pump turn and Burn Together for Izzet Leyline.
+ * leylinespend — with leyline: on non-lethal turns, spend surplus mana on damage pumps for evasive/unblocked attackers.
  *
  * landfall — LandfallBrain's Escape Tunnel + Mightform Harmonizer kill for Mono-Green Landfall.
  *
