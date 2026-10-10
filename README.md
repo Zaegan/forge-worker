@@ -27,7 +27,9 @@ installs), `-Once` (one batch, then exit).
 
 - `worker.ps1`: the client.
 - `harness/`: the forge-sim game harness (AI decision rules layered over Forge's AI, match runner, telemetry).
-- `server/jobserver.py`: the job server (leases, per-PC tokens, uploads; Python standard library only).
+- `server/api.php`: the job server as one PHP file (PHP 8 with SQLite3 and Zip), for any PHP web host; data and
+  tokens (stored as SHA-256 hashes) live outside the web root. Uploads are split to stay under the host's request limit.
+- `server/jobserver.py`: the same API in Python (standard library only), for local testing.
 
 Games are deterministic given their seed: a game played here gives exactly the result the project's own machines get.
 

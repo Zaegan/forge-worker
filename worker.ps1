@@ -143,29 +143,47 @@ function PlayBatch($job) {
         $todo = @($todo | Where-Object { -not (Test-Path (Join-Path $outs "$($_.gid).jsonl")) })
         if ($todo.Count -gt 0) { Log "$($todo.Count) games unfinished (a timed-out game ends its worker); retrying" }
     }
-    $res = foreach ($g in $job.games) {
-        $f = Join-Path $outs "$($g.gid).jsonl"
-        if (Test-Path $f) { '{"gid":"' + $g.gid + '","game":' + (Get-Content $f -Tail 1) + '}' }
+    # upload in parts small enough for the server's request limit (8 MB): split a part in half until its zip fits
+    $parts = New-Object System.Collections.ArrayList
+    [void]$parts.Add(@($job.games | Where-Object { Test-Path (Join-Path $outs "$($_.gid).jsonl") }))
+    $p = 0; $ok = $true
+    while ($p -lt $parts.Count) {
+        $part = $parts[$p]
+        $stage = Join-Path $jd "upload_$p"
+        if (Test-Path $stage) { Remove-Item $stage -Recurse -Force }
+        $slogs = Join-Path $stage "logs"
+        New-Item -ItemType Directory -Force -Path $slogs | Out-Null
+        $res = foreach ($g in $part) {
+            '{"gid":"' + $g.gid + '","game":' + (Get-Content (Join-Path $outs "$($g.gid).jsonl") -Tail 1) + '}'
+            Get-ChildItem $logs -Filter "*_$($g.seed)_$($g.index).*" | Copy-Item -Destination $slogs
+        }
+        [IO.File]::WriteAllLines((Join-Path $stage "results.jsonl"), [string[]]@($res | Where-Object { $_ -is [string] }))
+        $zip = Join-Path $jd "upload_$p.zip"
+        if (Test-Path $zip) { Remove-Item $zip }
+        Compress-Archive -Path (Join-Path $stage "results.jsonl"), $slogs -DestinationPath $zip
+        if ((Get-Item $zip).Length -gt 7MB -and $part.Count -gt 1) {
+            $h = [Math]::Floor($part.Count / 2)
+            $parts[$p] = @($part[0..($h - 1)]); [void]$parts.Insert($p + 1, @($part[$h..($part.Count - 1)]))
+            continue
+        }
+        $sent = $false
+        for ($try = 0; $try -lt 5 -and -not $sent; $try++) {
+            try {
+                $r = Invoke-WebRequest -Uri "$Server/api.php?a=result&job=$($job.job)&part=$p" -Method Post -InFile $zip `
+                     -ContentType "application/zip" -Headers $headers -UseBasicParsing -TimeoutSec 600
+                Log "uploaded $($job.job) part $p ($($part.Count) games): $($r.Content)"
+                $sent = $true
+            } catch { Log "upload failed ($($_.Exception.Message)); retrying in 60 s"; Start-Sleep 60 }
+        }
+        if (-not $sent) { $ok = $false }
+        $p++
     }
-    [IO.File]::WriteAllLines((Join-Path $jd "results.jsonl"), [string[]]@($res))
-    $zip = Join-Path $Dir "jobs/$($job.job).zip"
-    if (Test-Path $zip) { Remove-Item $zip }
-    Compress-Archive -Path (Join-Path $jd "results.jsonl"), $logs -DestinationPath $zip
-    for ($try = 0; $try -lt 5; $try++) {
-        try {
-            $r = Invoke-WebRequest -Uri "$Server/api/result?job=$($job.job)" -Method Post -InFile $zip -ContentType "application/zip" `
-                 -Headers $headers -UseBasicParsing -TimeoutSec 600
-            Log "uploaded $($job.job): $($r.Content)"
-            Remove-Item $jd -Recurse -Force; Remove-Item $zip
-            return
-        } catch { Log "upload failed ($($_.Exception.Message)); retrying in 60 s"; Start-Sleep 60 }
-    }
-    Log "giving up on uploading $($job.job); its files stay in $jd"
+    if ($ok) { Remove-Item $jd -Recurse -Force } else { Log "some uploads failed; the files stay in $jd" }
 }
 
 while ($true) {
     try {
-        $r = Invoke-WebRequest -Uri "$Server/api/job?slots=$Threads" -Headers $headers -UseBasicParsing -TimeoutSec 120
+        $r = Invoke-WebRequest -Uri "$Server/api.php?a=job&slots=$Threads" -Headers $headers -UseBasicParsing -TimeoutSec 120
     } catch { Log "server unreachable ($($_.Exception.Message)); retrying in 60 s"; Start-Sleep 60; continue }
     if ($r.StatusCode -eq 204) { Log "no work; checking again in 5 min"; if ($Once) { break }; Start-Sleep 300; continue }
     $job = $r.Content | ConvertFrom-Json

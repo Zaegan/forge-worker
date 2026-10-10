@@ -10,7 +10,7 @@ Campaigns: CAMPAIGNS/<name>/ holds games.jsonl (one game per line: {"gid", "a", 
 a and b are deck names), decks/<name>.dck, and meta.json ({"tweaks": "...", "harness": "<git commit>", "priority": N}).
 Results land in CAMPAIGNS/<name>/results/<worker>/<job>/ (results.jsonl plus the game logs) and state in state.sqlite.
 
-API (Authorization: Bearer <token>):
+API (Authorization: Bearer <token>); also served as api.php?a=job|result|status, like server/api.php:
   GET  /api/job?slots=N     -> 200 {"job", "campaign", "tweaks", "harness", "lease_s", "games": [...], "decks": {...}}
                                or 204 when there is no work
   POST /api/result?job=ID   body: a zip of results.jsonl + logs/ -> 200 {"accepted": n, "duplicates": m}
@@ -168,6 +168,9 @@ class H(BaseHTTPRequestHandler):
         if not w:
             return self.send(401, {"error": "bad token"})
         u = urlparse(self.path)
+        q = parse_qs(u.query)
+        if u.path.endswith("/api.php"):  # same routes as api.php: api.php?a=job|status
+            u = u._replace(path="/api/" + q.get("a", [""])[0])
         if u.path == "/api/job":
             slots = max(1, min(64, int(parse_qs(u.query).get("slots", ["1"])[0])))
             j = lease(w, slots)
@@ -181,6 +184,8 @@ class H(BaseHTTPRequestHandler):
         if not w:
             return self.send(401, {"error": "bad token"})
         u = urlparse(self.path)
+        if u.path.endswith("/api.php"):  # api.php?a=result&job=ID
+            u = u._replace(path="/api/" + parse_qs(u.query).get("a", [""])[0])
         n = int(self.headers.get("Content-Length", "0"))
         if u.path != "/api/result" or n <= 0 or n > MAX_UPLOAD:
             return self.send(400, {"error": "bad request"})
