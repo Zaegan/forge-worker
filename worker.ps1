@@ -14,15 +14,17 @@
   powershell -ExecutionPolicy Bypass -File worker.ps1 -Server https://example.org/forge -Token YOUR_TOKEN
 #>
 param(
-    [Parameter(Mandatory = $true)][string]$Server,
-    [Parameter(Mandatory = $true)][string]$Token,
+    [string]$Server = "",                   # job server (saved by -Install; then optional)
+    [string]$Token = "",                    # this PC's token (saved by -Install; then optional)
     [int]$Threads = 0,                      # default: logical CPUs - 2 (and no more than memory allows)
     [string]$Dir = "",                      # working folder (default %LOCALAPPDATA%\forge-worker)
     [string]$JavaHome = "",                 # use an existing JDK 21 instead of downloading one
     [string]$ForgeDir = "",                 # use an existing Forge 2.0.15 folder instead of downloading it
     [string]$Repo = "Zaegan/forge-worker",  # GitHub project holding the harness sources
     [string]$HarnessSrc = "",               # local harness folder (testing) instead of downloading from GitHub
-    [switch]$Once                           # play one batch and exit (testing)
+    [switch]$Once,                          # play one batch and exit (testing)
+    [switch]$Install,                       # save -Server/-Token and put a "Forge Worker" shortcut on the Desktop
+    [switch]$Uninstall                      # remove the Desktop shortcut (downloads and settings are kept)
 )
 $ErrorActionPreference = "Stop"
 $ProgressPreference = "SilentlyContinue"   # Invoke-WebRequest's progress bar makes downloads very slow on PS 5.1
@@ -32,6 +34,36 @@ $sep = if ($onWindows) { ";" } else { ":" }
 $exe = if ($onWindows) { ".exe" } else { "" }
 if (-not $Dir) { $Dir = if ($onWindows) { Join-Path $env:LOCALAPPDATA "forge-worker" } else { Join-Path $HOME ".forge-worker" } }
 New-Item -ItemType Directory -Force -Path $Dir | Out-Null
+
+# ---- settings, and start-at-logon ----
+$cfgFile = Join-Path $Dir "settings.json"
+if (Test-Path $cfgFile) {
+    $cfg = Get-Content $cfgFile -Raw | ConvertFrom-Json
+    if (-not $Server) { $Server = $cfg.Server }
+    if (-not $Token) { $Token = $cfg.Token }
+}
+$lnk = if ($onWindows) { Join-Path ([Environment]::GetFolderPath("Desktop")) "Forge Worker.lnk" } else { "" }
+if ($Uninstall) {
+    if ($lnk -and (Test-Path $lnk)) { Remove-Item $lnk }
+    Write-Host "Removed the Forge Worker shortcut (downloads and settings stay in $Dir)."
+    exit 0
+}
+if (-not $Server -or -not $Token) { throw "give -Server and -Token (once; -Install saves them)" }
+if ($Install) {
+    @{ Server = $Server; Token = $Token } | ConvertTo-Json | Set-Content -Path $cfgFile -Encoding UTF8
+    $self = Join-Path $Dir "worker.ps1"
+    if ($PSCommandPath -ne $self) { Copy-Item $PSCommandPath $self -Force }
+    if ($onWindows) {
+        $sh = New-Object -ComObject WScript.Shell
+        $l = $sh.CreateShortcut($lnk)
+        $l.TargetPath = Join-Path $env:SystemRoot "System32\WindowsPowerShell\v1.0\powershell.exe"
+        $l.Arguments = "-NoProfile -ExecutionPolicy Bypass -File `"$self`""
+        $l.WorkingDirectory = $Dir
+        $l.Description = "forge-worker: plays Forge games for the forge-sim job server"
+        $l.Save()
+        Write-Host "Installed: double-click 'Forge Worker' on your Desktop to start it; close its window to stop. Starting it now..."
+    }
+}
 $Server = $Server.TrimEnd("/")
 $headers = @{ Authorization = "Bearer $Token" }
 

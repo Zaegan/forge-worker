@@ -21,11 +21,15 @@ address is `https://tmp.atlantiscertificateadmin.vip/forge`.
    run-worker.cmd -Server https://tmp.atlantiscertificateadmin.vip/forge -Token YOUR_TOKEN
    ```
 
+   Add `-Install` at the end the first time: it saves the server and token and puts a **Forge Worker** shortcut on
+   your Desktop, so afterwards you just double-click that (no typing). `-Uninstall` removes the shortcut.
+
 5. **Leave the window open.** It prints a line now and then: downloads and setup on the first run (several minutes,
    ~500 MB), then `job ...: N games` when it starts a batch and `uploaded ...` when a batch is done. When there is no
    work it waits and checks again every 5 minutes.
 6. **To stop**, press **Ctrl+C** (answer `Y` if asked) or close the window. Nothing is lost: an unfinished batch is
-   given to another worker later. To start again, repeat steps 3-4; setup is not repeated.
+   given to another worker later. To start again, double-click **Forge Worker** on the Desktop (if you used `-Install`), or repeat steps 3-4;
+   setup is not repeated.
 
 If you prefer PowerShell to the command window, use
 `powershell -ExecutionPolicy Bypass -File .\worker.ps1 -Server ... -Token ...`. Typing `./worker.ps1` on its own fails
