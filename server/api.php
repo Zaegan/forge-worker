@@ -70,7 +70,9 @@ if ($a === 'job') {
     if (intval($_GET['v'] ?? 0) < $MIN_CLIENT) out(426, ['error' => 'please update forge-worker']);
     $slots = max(1, min(64, intval($_GET['slots'] ?? 1)));
     $camps = campaigns($DATA, $db);
-    uasort($camps, fn($x, $y) => ($y['priority'] ?? 0) <=> ($x['priority'] ?? 0));
+    // highest priority first; among equal priorities a random order, so several experiments share the workers
+    $rnd = []; foreach ($camps as $n => $m) $rnd[$n] = mt_rand();
+    uksort($camps, fn($x, $y) => (($camps[$y]['priority'] ?? 0) <=> ($camps[$x]['priority'] ?? 0)) ?: ($rnd[$x] <=> $rnd[$y]));
     $now = microtime(true);
     $db->exec('begin immediate');
     $db->exec("update games set status='open', job=null, worker=null where status='leased' and lease_until < $now");
