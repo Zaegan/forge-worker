@@ -95,7 +95,20 @@ if ($Install) {
 $Server = $Server.TrimEnd("/")
 $headers = @{ Authorization = "Bearer $Token" }
 
-function Log($m) { Write-Host ("{0} {1}" -f (Get-Date -Format "HH:mm:ss"), $m) }
+$script:LogFile = Join-Path $Dir "worker.log"
+function Log($m) {
+    $line = "{0} {1}" -f (Get-Date -Format "HH:mm:ss"), $m
+    Write-Host $line
+    try { Add-Content -Path $script:LogFile -Value $line } catch { }
+}
+# any unhandled error: record it, keep the window open (a shortcut-started window would otherwise vanish), then exit
+trap {
+    Log "FATAL: $($_.Exception.Message)"
+    Log "  at $($_.InvocationInfo.PositionMessage -replace '\s+', ' ')"
+    try { StopPool } catch { }
+    Read-Host "forge-worker stopped because of the error above. Press Enter to close"
+    exit 1
+}
 
 function Download($url, $dest) {
     if (Test-Path $dest) { return }
