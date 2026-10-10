@@ -70,6 +70,10 @@ if ($a === 'job') {
     if (intval($_GET['v'] ?? 0) < $MIN_CLIENT) out(426, ['error' => 'please update forge-worker']);
     $slots = max(1, min(64, intval($_GET['slots'] ?? 1)));
     $camps = campaigns($DATA, $db);
+    // DATA/priorities.json {"<substring of a campaign's meta.run path>": priority}: steer whole lines of work
+    $ov = @json_decode(@file_get_contents("$DATA/priorities.json") ?: '{}', true) ?: [];
+    foreach ($camps as $n => $m) foreach ($ov as $pat => $pr)
+        if (isset($m['run']) && str_contains($m['run'], $pat)) $camps[$n]['priority'] = intval($pr);
     // highest priority first; among equal priorities a random order, so several experiments share the workers
     $rnd = []; foreach ($camps as $n => $m) $rnd[$n] = mt_rand();
     uksort($camps, fn($x, $y) => (($camps[$y]['priority'] ?? 0) <=> ($camps[$x]['priority'] ?? 0)) ?: ($rnd[$x] <=> $rnd[$y]));
