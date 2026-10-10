@@ -16,6 +16,7 @@ umask(0);
 $DATA = getenv('FORGE_DATA') ?: realpath(__DIR__ . '/../../uploads') . '/forge';
 $LEASE = 1800;
 $PER_SLOT = 25;
+$MIN_CLIENT = 0;   // raise to make older workers stop and ask their owner to run "Update Forge Worker"
 
 function out($code, $obj = null) {
     http_response_code($code);
@@ -58,6 +59,7 @@ function campaigns($DATA, $db) {
 
 $a = $_GET['a'] ?? '';
 if ($a === 'job') {
+    if (intval($_GET['v'] ?? 0) < $MIN_CLIENT) out(426, ['error' => 'please update forge-worker']);
     $slots = max(1, min(64, intval($_GET['slots'] ?? 1)));
     $camps = campaigns($DATA, $db);
     uasort($camps, fn($x, $y) => ($y['priority'] ?? 0) <=> ($x['priority'] ?? 0));

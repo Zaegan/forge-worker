@@ -21,8 +21,9 @@ address is `https://tmp.atlantiscertificateadmin.vip/forge`.
    run-worker.cmd -Server https://tmp.atlantiscertificateadmin.vip/forge -Token YOUR_TOKEN
    ```
 
-   Or, once, add `-Install` at the end instead: it saves the server and token and puts a **Forge Worker** shortcut on
-   your Desktop (without starting the worker), so from then on you just double-click that. `-Uninstall` removes it.
+   Or, once, add `-Install` at the end instead: it saves the server and token and puts two shortcuts on your Desktop
+   (without starting the worker): **Forge Worker** (start it) and **Update Forge Worker**. From then on you just
+   double-click. `-Uninstall` removes them.
    This one line (PowerShell) does the install without downloading the ZIP at all:
 
    ```
@@ -40,6 +41,16 @@ If you prefer PowerShell to the command window, use
 `powershell -ExecutionPolicy Bypass -File .\worker.ps1 -Server ... -Token ...`. Typing `./worker.ps1` on its own fails
 with "running scripts is disabled on this system": that is Windows' default script policy, and the two commands above
 run the script without changing it.
+
+### Updates and safety
+
+- **Updates are never automatic.** "Forge Worker" always runs the copy already on your PC. "Update Forge Worker"
+  downloads the newest `worker.ps1`, shows the recent commits (with a link to review them on GitHub) and installs it
+  only if you type `YES`. If the server ever needs a newer worker, the worker says so and stops instead of failing.
+- **Harness code is checked before it runs.** Each job names the harness commit to compile. The worker only accepts a
+  full commit id that is part of this repository's own `main` branch (checked with GitHub's API), so a job cannot make
+  it compile code from a fork or anywhere else.
+- Java and Forge come only from their official sources (adoptium.net, Forge's GitHub releases).
 
 ### What it does
 

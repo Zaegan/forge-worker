@@ -25,8 +25,9 @@ param(
     [switch]$Once,                          # play one batch and exit (testing)
     [switch]$Install,                       # save -Server/-Token and put a "Forge Worker" shortcut on the Desktop
     [switch]$Uninstall,                     # remove the Desktop shortcut (downloads and settings are kept)
-    [switch]$NoUpdate                       # do not check GitHub for a newer worker.ps1 at start
+    [switch]$Update                         # review and (after you confirm) install the newest worker.ps1; does not start work
 )
+$ClientVersion = 3                          # the server can ask clients older than its minimum to update
 $ErrorActionPreference = "Stop"
 $ProgressPreference = "SilentlyContinue"   # Invoke-WebRequest's progress bar makes downloads very slow on PS 5.1
 [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
@@ -36,23 +37,20 @@ $exe = if ($onWindows) { ".exe" } else { "" }
 if (-not $Dir) { $Dir = if ($onWindows) { Join-Path $env:LOCALAPPDATA "forge-worker" } else { Join-Path $HOME ".forge-worker" } }
 New-Item -ItemType Directory -Force -Path $Dir | Out-Null
 
-# ---- self-update: fetch the newest worker.ps1 from GitHub; if it differs, replace this file and start again ----
-if (-not $NoUpdate -and -not $HarnessSrc -and -not $Install -and -not $Uninstall) {
-    try {
-        $new = (Invoke-WebRequest -Uri "https://raw.githubusercontent.com/$Repo/main/worker.ps1" -UseBasicParsing -TimeoutSec 30).Content
-        $old = [IO.File]::ReadAllText($PSCommandPath)
-        if ($new -and $new.Contains("forge-worker") -and $new -ne $old) {
-            [IO.File]::WriteAllText($PSCommandPath, $new)
-            Write-Host "Updated worker.ps1 from GitHub; restarting it."
-            $pass = @("-NoProfile", "-ExecutionPolicy", "Bypass", "-File", $PSCommandPath, "-NoUpdate")
-            foreach ($kv in $PSBoundParameters.GetEnumerator()) {
-                if ($kv.Value -is [switch]) { if ($kv.Value) { $pass += "-$($kv.Key)" } } else { $pass += "-$($kv.Key)"; $pass += "$($kv.Value)" }
-            }
-            $ps = if ($onWindows) { "powershell" } else { "pwsh" }
-            & $ps @pass
-            exit $LASTEXITCODE
-        }
-    } catch { Write-Host "Could not check for updates ($($_.Exception.Message)); continuing." }
+# ---- manual update (never automatic): show what changed on GitHub, install only after the user types YES ----
+if ($Update) {
+    $self = if (Test-Path (Join-Path $Dir "worker.ps1")) { Join-Path $Dir "worker.ps1" } else { $PSCommandPath }
+    $new = (Invoke-WebRequest -Uri "https://raw.githubusercontent.com/$Repo/main/worker.ps1" -UseBasicParsing -TimeoutSec 60).Content
+    if ($new -eq [IO.File]::ReadAllText($self)) { Write-Host "Already up to date."; Read-Host "Press Enter to close"; exit 0 }
+    Write-Host "A newer worker.ps1 is on GitHub. Recent changes to it:"
+    $commits = Invoke-RestMethod -Uri "https://api.github.com/repos/$Repo/commits?path=worker.ps1&per_page=5" -UseBasicParsing
+    foreach ($c in $commits) { Write-Host ("  {0}  {1}  {2}" -f $c.commit.author.date, $c.sha.Substring(0, 7), $c.commit.message.Split("`n")[0]) }
+    Write-Host "Review them at https://github.com/$Repo/commits/main/worker.ps1"
+    if ((Read-Host "Type YES to install this version") -ne "YES") { Write-Host "Not updated."; exit 0 }
+    [IO.File]::WriteAllText($self, $new)
+    Write-Host "Updated $self."
+    Read-Host "Press Enter to close"
+    exit 0
 }
 
 # ---- settings, and start-at-logon ----
@@ -65,6 +63,8 @@ if (Test-Path $cfgFile) {
 $lnk = if ($onWindows) { Join-Path ([Environment]::GetFolderPath("Desktop")) "Forge Worker.lnk" } else { "" }
 if ($Uninstall) {
     if ($lnk -and (Test-Path $lnk)) { Remove-Item $lnk }
+    $ulnk = if ($onWindows) { Join-Path ([Environment]::GetFolderPath("Desktop")) "Update Forge Worker.lnk" } else { "" }
+    if ($ulnk -and (Test-Path $ulnk)) { Remove-Item $ulnk }
     Write-Host "Removed the Forge Worker shortcut (downloads and settings stay in $Dir)."
     exit 0
 }
@@ -81,7 +81,14 @@ if ($Install) {
         $l.WorkingDirectory = $Dir
         $l.Description = "forge-worker: plays Forge games for the forge-sim job server"
         $l.Save()
-        Write-Host "Installed. From now on: double-click 'Forge Worker' on your Desktop to start; close its window to stop."
+        $u = $sh.CreateShortcut((Join-Path ([Environment]::GetFolderPath("Desktop")) "Update Forge Worker.lnk"))
+        $u.TargetPath = $l.TargetPath
+        $u.Arguments = "-NoProfile -ExecutionPolicy Bypass -File `"$self`" -Update"
+        $u.WorkingDirectory = $Dir
+        $u.Description = "Review and install a newer forge-worker (never runs by itself)"
+        $u.Save()
+        Write-Host "Installed. Double-click 'Forge Worker' on your Desktop to start; close its window to stop."
+        Write-Host "Updates are never automatic: 'Update Forge Worker' shows what changed and asks before installing."
     }
     exit 0   # install only: it does not start a (second) worker
 }
@@ -137,6 +144,15 @@ function Harness($commit) {
     $dir = Join-Path $Dir "harness/$commit"
     $classes = Join-Path $dir "classes"
     if (Test-Path (Join-Path $classes "MatchWorker.class")) { return $classes }
+    if (-not $HarnessSrc) {
+        if ($commit -notmatch '^[0-9a-f]{40}$') { throw "refusing harness '$commit': not a full commit id" }
+        # only compile a commit that is part of $Repo's own main branch: compare main...commit is "behind" or
+        # "identical" exactly when the commit is an ancestor of main (a fork's commit is "diverged" or unknown)
+        $cmp = Invoke-RestMethod -Uri "https://api.github.com/repos/$Repo/compare/main...$commit" -UseBasicParsing -TimeoutSec 60
+        if ($cmp.status -ne "behind" -and $cmp.status -ne "identical") {
+            throw "refusing harness $commit`: it is not on $Repo's main branch (status '$($cmp.status)')"
+        }
+    }
     New-Item -ItemType Directory -Force -Path $dir | Out-Null
     if ($HarnessSrc) { $src = $HarnessSrc } else {
         $zip = Join-Path $dir "src.zip"
@@ -283,8 +299,13 @@ function PlayBatch($job) {
 
 while ($true) {
     try {
-        $r = Invoke-WebRequest -Uri "$Server/api.php?a=job&slots=$Threads" -Headers $headers -UseBasicParsing -TimeoutSec 120
-    } catch { Log "server unreachable ($($_.Exception.Message)); retrying in 60 s"; Start-Sleep 60; continue }
+        $r = Invoke-WebRequest -Uri "$Server/api.php?a=job&slots=$Threads&v=$ClientVersion" -Headers $headers -UseBasicParsing -TimeoutSec 120
+    } catch {
+        if ($_.Exception.Response -and [int]$_.Exception.Response.StatusCode -eq 426) {
+            Log "the server needs a newer forge-worker: run 'Update Forge Worker' (it shows the changes and asks first)"; break
+        }
+        Log "server unreachable ($($_.Exception.Message)); retrying in 60 s"; Start-Sleep 60; continue
+    }
     if ($r.StatusCode -eq 204) { Log "no work; checking again in 5 min"; if ($Once) { break }; Start-Sleep 300; continue }
     $job = $r.Content | ConvertFrom-Json
     Log "job $($job.job): $($job.games.Count) games from campaign $($job.campaign)"
