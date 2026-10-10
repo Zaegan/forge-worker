@@ -21,8 +21,13 @@ address is `https://tmp.atlantiscertificateadmin.vip/forge`.
    run-worker.cmd -Server https://tmp.atlantiscertificateadmin.vip/forge -Token YOUR_TOKEN
    ```
 
-   Add `-Install` at the end the first time: it saves the server and token and puts a **Forge Worker** shortcut on
-   your Desktop, so afterwards you just double-click that (no typing). `-Uninstall` removes the shortcut.
+   Or, once, add `-Install` at the end instead: it saves the server and token and puts a **Forge Worker** shortcut on
+   your Desktop (without starting the worker), so from then on you just double-click that. `-Uninstall` removes it.
+   This one line (PowerShell) does the install without downloading the ZIP at all:
+
+   ```
+   iwr https://raw.githubusercontent.com/Zaegan/forge-worker/main/worker.ps1 -OutFile $env:TEMP\fw.ps1; powershell -NoProfile -ExecutionPolicy Bypass -File $env:TEMP\fw.ps1 -Server https://tmp.atlantiscertificateadmin.vip/forge -Token YOUR_TOKEN -Install
+   ```
 
 5. **Leave the window open.** It prints a line now and then: downloads and setup on the first run (several minutes,
    ~500 MB), then `job ...: N games` when it starts a batch and `uploaded ...` when a batch is done. When there is no

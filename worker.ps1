@@ -61,8 +61,9 @@ if ($Install) {
         $l.WorkingDirectory = $Dir
         $l.Description = "forge-worker: plays Forge games for the forge-sim job server"
         $l.Save()
-        Write-Host "Installed: double-click 'Forge Worker' on your Desktop to start it; close its window to stop. Starting it now..."
+        Write-Host "Installed. From now on: double-click 'Forge Worker' on your Desktop to start; close its window to stop."
     }
+    exit 0   # install only: it does not start a (second) worker
 }
 $Server = $Server.TrimEnd("/")
 $headers = @{ Authorization = "Bearer $Token" }
