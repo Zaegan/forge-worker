@@ -24,7 +24,8 @@ param(
     [string]$HarnessSrc = "",               # local harness folder (testing) instead of downloading from GitHub
     [switch]$Once,                          # play one batch and exit (testing)
     [switch]$Install,                       # save -Server/-Token and put a "Forge Worker" shortcut on the Desktop
-    [switch]$Uninstall                      # remove the Desktop shortcut (downloads and settings are kept)
+    [switch]$Uninstall,                     # remove the Desktop shortcut (downloads and settings are kept)
+    [switch]$NoUpdate                       # do not check GitHub for a newer worker.ps1 at start
 )
 $ErrorActionPreference = "Stop"
 $ProgressPreference = "SilentlyContinue"   # Invoke-WebRequest's progress bar makes downloads very slow on PS 5.1
@@ -34,6 +35,25 @@ $sep = if ($onWindows) { ";" } else { ":" }
 $exe = if ($onWindows) { ".exe" } else { "" }
 if (-not $Dir) { $Dir = if ($onWindows) { Join-Path $env:LOCALAPPDATA "forge-worker" } else { Join-Path $HOME ".forge-worker" } }
 New-Item -ItemType Directory -Force -Path $Dir | Out-Null
+
+# ---- self-update: fetch the newest worker.ps1 from GitHub; if it differs, replace this file and start again ----
+if (-not $NoUpdate -and -not $HarnessSrc -and -not $Install -and -not $Uninstall) {
+    try {
+        $new = (Invoke-WebRequest -Uri "https://raw.githubusercontent.com/$Repo/main/worker.ps1" -UseBasicParsing -TimeoutSec 30).Content
+        $old = [IO.File]::ReadAllText($PSCommandPath)
+        if ($new -and $new.Contains("forge-worker") -and $new -ne $old) {
+            [IO.File]::WriteAllText($PSCommandPath, $new)
+            Write-Host "Updated worker.ps1 from GitHub; restarting it."
+            $pass = @("-NoProfile", "-ExecutionPolicy", "Bypass", "-File", $PSCommandPath, "-NoUpdate")
+            foreach ($kv in $PSBoundParameters.GetEnumerator()) {
+                if ($kv.Value -is [switch]) { if ($kv.Value) { $pass += "-$($kv.Key)" } } else { $pass += "-$($kv.Key)"; $pass += "$($kv.Value)" }
+            }
+            $ps = if ($onWindows) { "powershell" } else { "pwsh" }
+            & $ps @pass
+            exit $LASTEXITCODE
+        }
+    } catch { Write-Host "Could not check for updates ($($_.Exception.Message)); continuing." }
+}
 
 # ---- settings, and start-at-logon ----
 $cfgFile = Join-Path $Dir "settings.json"
@@ -143,39 +163,83 @@ if ($Threads -le 0) {
 }
 Log "forge-worker: $Threads game workers, home $Dir"
 
+# ---- game workers: long-lived Forge JVMs fed one game at a time from a shared queue (like forge-sim's engine) ----
+$script:pool = New-Object System.Collections.ArrayList
+$logs = Join-Path $Dir "logs"
+New-Item -ItemType Directory -Force -Path $logs | Out-Null
+
+function StartWorker($classes, $tweaks, $key) {
+    $psi = New-Object System.Diagnostics.ProcessStartInfo
+    $psi.FileName = $java
+    $psi.Arguments = "-Xmx2048m -Djava.awt.headless=true -Dio.netty.tryReflectionSetAccessible=true -Dfile.encoding=UTF-8 " +
+                     "`"-Dforge.sim.gamelog=$logs`" -Dforge.sim.tweaks=$tweaks -cp `"$jar$sep$classes`" MatchWorker"
+    $psi.WorkingDirectory = $ForgeDir
+    $psi.UseShellExecute = $false
+    $psi.RedirectStandardInput = $true; $psi.RedirectStandardOutput = $true; $psi.RedirectStandardError = $true
+    $psi.CreateNoWindow = $true
+    $p = [Diagnostics.Process]::Start($psi)
+    try { $p.PriorityClass = "BelowNormal" } catch { }
+    return [pscustomobject]@{ P = $p; Out = $p.StandardOutput.ReadLineAsync(); Err = $p.StandardError.ReadLineAsync()
+                              Ready = $false; Cur = $null; Key = $key; Dead = $false }
+}
+
+function StopPool {
+    foreach ($w in $script:pool) { try { $w.P.StandardInput.Close() } catch { }; try { if (-not $w.P.WaitForExit(30000)) { $w.P.Kill() } } catch { } }
+    $script:pool.Clear()
+}
+
 function PlayBatch($job) {
     $jd = Join-Path $Dir "jobs/$($job.job)"
-    $decks = Join-Path $jd "decks"; $logs = Join-Path $jd "logs"; $outs = Join-Path $jd "out"
-    New-Item -ItemType Directory -Force -Path $decks, $logs, $outs | Out-Null
+    $decks = Join-Path $jd "decks"; $outs = Join-Path $jd "out"
+    New-Item -ItemType Directory -Force -Path $decks, $outs | Out-Null
     foreach ($p in $job.decks.PSObject.Properties) {
         [IO.File]::WriteAllText((Join-Path $decks "$($p.Name).dck"), $p.Value)
     }
     $classes = Harness $job.harness
-    $todo = @($job.games)
-    for ($round = 0; $round -lt 3 -and $todo.Count -gt 0; $round++) {
-        $n = [Math]::Min($Threads, $todo.Count)
-        $procs = @()
-        for ($k = 0; $k -lt $n; $k++) {
-            $lines = for ($i = $k; $i -lt $todo.Count; $i += $n) {
-                $g = $todo[$i]
-                ($g.gid, (Join-Path $decks "$($g.a).dck"), (Join-Path $decks "$($g.b).dck"), $g.seed, $g.index, $g.timeout,
-                 (Join-Path $outs "$($g.gid).jsonl")) -join "`t"
-            }
-            $tin = Join-Path $jd "tasks_${round}_$k.txt"
-            [IO.File]::WriteAllLines($tin, [string[]]$lines)
-            $jargs = @("-Xmx2048m", "-Djava.awt.headless=true", "-Dio.netty.tryReflectionSetAccessible=true",
-                       "-Dfile.encoding=UTF-8", "`"-Dforge.sim.gamelog=$logs`"", "-Dforge.sim.tweaks=$($job.tweaks)",
-                       "-cp", "`"$jar$sep$classes`"", "MatchWorker")
-            $p = Start-Process -FilePath $java -ArgumentList $jargs -WorkingDirectory $ForgeDir -NoNewWindow -PassThru `
-                 -RedirectStandardInput $tin -RedirectStandardOutput (Join-Path $jd "worker_${round}_$k.out") `
-                 -RedirectStandardError (Join-Path $jd "worker_${round}_$k.err")
-            try { $p.PriorityClass = "BelowNormal" } catch { }
-            $procs += $p
+    $key = "$($job.harness)|$($job.tweaks)"
+    if (@($script:pool | Where-Object { $_.Key -ne $key }).Count -gt 0) { Log "new harness or settings: restarting the game workers"; StopPool }
+    $queue = New-Object System.Collections.Queue
+    foreach ($g in $job.games) { $queue.Enqueue($g) }
+    $tries = @{}
+    $t0 = Get-Date; $done = 0
+    while ($queue.Count -gt 0 -or @($script:pool | Where-Object { $_.Cur }).Count -gt 0) {
+        while ($script:pool.Count -lt $Threads -and $queue.Count -gt @($script:pool | Where-Object { -not $_.Cur }).Count) {
+            [void]$script:pool.Add((StartWorker $classes $job.tweaks $key))
         }
-        $procs | Wait-Process
-        $todo = @($todo | Where-Object { -not (Test-Path (Join-Path $outs "$($_.gid).jsonl")) })
-        if ($todo.Count -gt 0) { Log "$($todo.Count) games unfinished (a timed-out game ends its worker); retrying" }
+        foreach ($w in @($script:pool)) {
+            while ($w.Err.IsCompleted -and $w.Err.Result -ne $null) { $w.Err = $w.P.StandardError.ReadLineAsync() }
+            while ($w.Out.IsCompleted -and $w.Out.Result -ne $null) {
+                $line = $w.Out.Result
+                if ($line -eq "@@READY") { $w.Ready = $true }
+                elseif ($line.StartsWith("@@DONE ") -or $line.StartsWith("@@FAIL ")) {
+                    if ($line.StartsWith("@@FAIL ") -and $w.Cur) {
+                        $tries[$w.Cur.gid] = 1 + [int]$tries[$w.Cur.gid]
+                        if ($tries[$w.Cur.gid] -lt 3) { $queue.Enqueue($w.Cur) }
+                    } else { $done++ }
+                    $w.Cur = $null
+                }
+                $w.Out = $w.P.StandardOutput.ReadLineAsync()
+            }
+            if ($w.P.HasExited) {
+                # a timed-out game ends its JVM (by design); a game it never reported goes back on the queue
+                if ($w.Cur -and -not (Test-Path (Join-Path $outs "$($w.Cur.gid).jsonl"))) {
+                    $tries[$w.Cur.gid] = 1 + [int]$tries[$w.Cur.gid]
+                    if ($tries[$w.Cur.gid] -lt 3) { $queue.Enqueue($w.Cur) }
+                } elseif ($w.Cur) { $done++ }
+                $w.Cur = $null; $w.Dead = $true
+            } elseif ($w.Ready -and -not $w.Cur -and $queue.Count -gt 0) {
+                $g = $queue.Dequeue()
+                $w.P.StandardInput.WriteLine((($g.gid, (Join-Path $decks "$($g.a).dck"), (Join-Path $decks "$($g.b).dck"),
+                    $g.seed, $g.index, $g.timeout, (Join-Path $outs "$($g.gid).jsonl")) -join "`t"))
+                $w.P.StandardInput.Flush()
+                $w.Cur = $g
+            }
+        }
+        foreach ($w in @($script:pool | Where-Object { $_.Dead })) { $script:pool.Remove($w) }
+        Start-Sleep -Milliseconds 200
     }
+    $min = ((Get-Date) - $t0).TotalMinutes
+    Log ("played {0} games in {1:N1} min ({2:N0} games/min)" -f $done, $min, ($done / [Math]::Max($min, 0.01)))
     # upload in parts small enough for the server's request limit (8 MB): split a part in half until its zip fits
     $parts = New-Object System.Collections.ArrayList
     [void]$parts.Add(@($job.games | Where-Object { Test-Path (Join-Path $outs "$($_.gid).jsonl") }))
@@ -188,7 +252,7 @@ function PlayBatch($job) {
         New-Item -ItemType Directory -Force -Path $slogs | Out-Null
         $res = foreach ($g in $part) {
             '{"gid":"' + $g.gid + '","game":' + (Get-Content (Join-Path $outs "$($g.gid).jsonl") -Tail 1) + '}'
-            Get-ChildItem $logs -Filter "*_$($g.seed)_$($g.index).*" | Copy-Item -Destination $slogs
+            Get-ChildItem $logs -Filter "$($g.a)_vs_$($g.b)_$($g.seed)_$($g.index).*" | Copy-Item -Destination $slogs
         }
         [IO.File]::WriteAllLines((Join-Path $stage "results.jsonl"), [string[]]@($res | Where-Object { $_ -is [string] }))
         $zip = Join-Path $jd "upload_$p.zip"
@@ -211,7 +275,10 @@ function PlayBatch($job) {
         if (-not $sent) { $ok = $false }
         $p++
     }
-    if ($ok) { Remove-Item $jd -Recurse -Force } else { Log "some uploads failed; the files stay in $jd" }
+    if ($ok) {
+        foreach ($g in $job.games) { Get-ChildItem $logs -Filter "$($g.a)_vs_$($g.b)_$($g.seed)_$($g.index).*" | Remove-Item }
+        Remove-Item $jd -Recurse -Force
+    } else { Log "some uploads failed; the files stay in $jd" }
 }
 
 while ($true) {
