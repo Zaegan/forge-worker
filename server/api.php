@@ -13,6 +13,8 @@
 //   POST api.php?a=result&job=ID   body: zip of results.jsonl + logs/   -> {"accepted", "duplicates"}
 //   GET  api.php?a=withdrawn       campaigns withdrawn by the orchestrator (workers drop their unstarted games)
 //   GET  api.php?a=status
+// DATA/workers.json {"<worker name>": {"threads": N}} sets a machine's game-worker count (sent with each job; the
+// client never exceeds its own limit of logical CPUs - 2).
 // meta.json may also set "per_slot" (games per worker slot per batch), "lease_s" and "withdrawn": true.
 umask(0);
 $DATA = getenv('FORGE_DATA') ?: realpath(__DIR__ . '/../../uploads') . '/forge';
@@ -102,7 +104,10 @@ if ($a === 'job') {
             foreach (['a', 'b'] as $k)
                 if (!isset($decks[$g[$k]])) $decks[$g[$k]] = file_get_contents("$d/decks/" . basename($g[$k]) . ".dck");
         }
-        out(200, ['job' => $job, 'campaign' => $name, 'tweaks' => $meta['tweaks'] ?? '', 'harness' => $meta['harness'],
+        $ws = @json_decode(@file_get_contents("$DATA/workers.json") ?: '{}', true);   // per-machine settings
+        out(200, ['job' => $job, 'campaign' => $name, 'priority' => intval($meta['priority'] ?? 0),
+                  'threads' => intval($ws[$worker]['threads'] ?? 0),
+                  'tweaks' => $meta['tweaks'] ?? '', 'harness' => $meta['harness'],
                   'lease_s' => $lease, 'games' => $games, 'decks' => $decks]);
     }
     $db->exec('commit');

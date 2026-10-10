@@ -59,6 +59,7 @@ if (Test-Path $cfgFile) {
     $cfg = Get-Content $cfgFile -Raw | ConvertFrom-Json
     if (-not $Server) { $Server = $cfg.Server }
     if (-not $Token) { $Token = $cfg.Token }
+    if ($Threads -le 0 -and $cfg.Threads) { $Threads = [int]$cfg.Threads }
 }
 $lnk = if ($onWindows) { Join-Path ([Environment]::GetFolderPath("Desktop")) "Forge Worker.lnk" } else { "" }
 if ($Uninstall) {
@@ -70,7 +71,9 @@ if ($Uninstall) {
 }
 if (-not $Server -or -not $Token) { throw "give -Server and -Token (once; -Install saves them)" }
 if ($Install) {
-    @{ Server = $Server; Token = $Token } | ConvertTo-Json | Set-Content -Path $cfgFile -Encoding UTF8
+    $save = @{ Server = $Server; Token = $Token }
+    if ($Threads -gt 0) { $save.Threads = $Threads }   # -Install -Threads N: the shortcut uses N workers from now on
+    $save | ConvertTo-Json | Set-Content -Path $cfgFile -Encoding UTF8
     $self = Join-Path $Dir "worker.ps1"
     if ($PSCommandPath -ne $self) { Copy-Item $PSCommandPath $self -Force }
     if ($onWindows) {
@@ -177,21 +180,25 @@ function Harness($commit) {
     New-Item -ItemType Directory -Force -Path $classes | Out-Null
     $files = (Get-ChildItem $src -Filter *.java).FullName
     Log "compiling the harness ($commit)"
+    $ct = Get-Date
     & $javac -nowarn -encoding UTF-8 -d $classes -cp $jar $files 2>&1 | Where-Object { $_ -notmatch "^Note:" } | ForEach-Object { Log $_ }
     if (-not (Test-Path (Join-Path $classes "MatchWorker.class"))) { throw "harness did not compile" }
+    Log ("harness compiled in {0:N0} s" -f ((Get-Date) - $ct).TotalSeconds)
     return $classes
 }
 
 # ---- worker count: CPUs - 2, and at most what memory allows (each Forge JVM may use 2 GB) ----
-if ($Threads -le 0) {
-    $Threads = [Math]::Max(1, [Environment]::ProcessorCount - 2)
-    try {
-        $gb = if ($onWindows) { (Get-CimInstance Win32_ComputerSystem).TotalPhysicalMemory / 1GB }
-              else { [double]((Get-Content /proc/meminfo | Select-String MemTotal).ToString().Split(" ", [StringSplitOptions]::RemoveEmptyEntries)[1]) / 1MB }
-        $Threads = [Math]::Max(1, [Math]::Min($Threads, [Math]::Floor(($gb - 4) / 2.5)))
-    } catch { }
-}
-Log "forge-worker: $Threads game workers, home $Dir"
+# $Ceiling is this PC's limit, which nothing from the server can exceed (2 threads always stay free); the server may
+# set a lower count per machine, which is how the best count is found and kept without touching the PC.
+$Ceiling = [Math]::Max(1, [Environment]::ProcessorCount - 2)
+try {
+    $gb = if ($onWindows) { (Get-CimInstance Win32_ComputerSystem).TotalPhysicalMemory / 1GB }
+          else { [double]((Get-Content /proc/meminfo | Select-String MemTotal).ToString().Split(" ", [StringSplitOptions]::RemoveEmptyEntries)[1]) / 1MB }
+    $Ceiling = [Math]::Max(1, [Math]::Min($Ceiling, [Math]::Floor(($gb - 4) / 2.5)))
+} catch { }
+if ($Threads -gt 0) { $Ceiling = $Threads }   # an explicit (or saved) -Threads is the ceiling
+$Threads = $Ceiling
+Log "forge-worker: $Threads game workers (at most $Ceiling), home $Dir"
 
 # ---- game workers: long-lived Forge JVMs fed one game at a time from a shared queue (like forge-sim's engine) ----
 $script:pool = New-Object System.Collections.ArrayList
@@ -210,7 +217,7 @@ function StartWorker($classes, $tweaks, $key) {
     $p = [Diagnostics.Process]::Start($psi)
     try { $p.PriorityClass = "BelowNormal" } catch { }
     return [pscustomobject]@{ P = $p; Out = $p.StandardOutput.ReadLineAsync(); Err = $p.StandardError.ReadLineAsync()
-                              Ready = $false; Cur = $null; Key = $key; Dead = $false }
+                              Ready = $false; Cur = $null; Key = $key; Dead = $false; Retiring = $false }
 }
 
 function StopPool {
@@ -229,7 +236,8 @@ $UploadBlock = {
     $games = @($gamesJson | ConvertFrom-Json | ForEach-Object { $_ })
     # parts small enough for the server's request limit (8 MB): split a part in half until its zip fits
     $parts = New-Object System.Collections.ArrayList
-    [void]$parts.Add(@($games | Where-Object { Test-Path (Join-Path $outs "$($_.gid).jsonl") }))
+    function SafeName($gid) { ($gid -replace '[^A-Za-z0-9_.-]', '_') + '-' + [BitConverter]::ToString([Security.Cryptography.MD5]::Create().ComputeHash([Text.Encoding]::UTF8.GetBytes([string]$gid))).Replace('-', '').Substring(0, 8) }
+    [void]$parts.Add(@($games | Where-Object { Test-Path (Join-Path $outs "$(SafeName $_.gid).jsonl") }))
     $p = 0; $ok = $true
     while ($p -lt $parts.Count) {
         $part = $parts[$p]
@@ -238,7 +246,7 @@ $UploadBlock = {
         $slogs = Join-Path $stage "logs"
         New-Item -ItemType Directory -Force -Path $slogs | Out-Null
         $res = foreach ($g in $part) {
-            '{"gid":"' + $g.gid + '","game":' + (Get-Content (Join-Path $outs "$($g.gid).jsonl") -Tail 1) + '}'
+            '{"gid":' + (ConvertTo-Json -InputObject ([string]$g.gid) -Compress) + ',"game":' + (Get-Content (Join-Path $outs "$(SafeName $g.gid).jsonl") -Tail 1) + '}'
             Get-ChildItem $logs -Filter "$($g.a)_vs_$($g.b)_$($g.seed)_$($g.index).*" | Copy-Item -Destination $slogs
         }
         [IO.File]::WriteAllLines((Join-Path $stage "results.jsonl"), [string[]]@($res | Where-Object { $_ -is [string] }))
@@ -268,6 +276,10 @@ $UploadBlock = {
     } else { "some uploads of $jobId failed; its files stay in $jd" }
 }
 
+# file names from game ids: ids may contain characters Windows forbids in paths (e.g. "B|B00|3"); the short hash keeps
+# two ids that sanitise alike apart. The id itself is still what is reported to the server.
+function SafeName($gid) { ($gid -replace '[^A-Za-z0-9_.-]', '_') + '-' + [BitConverter]::ToString([Security.Cryptography.MD5]::Create().ComputeHash([Text.Encoding]::UTF8.GetBytes([string]$gid))).Replace('-', '').Substring(0, 8) }
+
 function PrepareJob($job) {
     $jd = Join-Path $Dir "jobs/$($job.job)"
     $decks = Join-Path $jd "decks"; $outs = Join-Path $jd "out"
@@ -286,9 +298,10 @@ $hold = $null; $curKey = $null; $active = 0
 $uploads = New-Object System.Collections.ArrayList
 $nextFetch = Get-Date; $fetched = 0; $stop = $false
 $nextWithdrawCheck = Get-Date
+$nextProgress = (Get-Date).AddMinutes(3); $script:gamesDone = 0; $lastDone = 0; $lastProg = Get-Date; $announcedReady = $false
 
 function Finish($st, $played) {
-    $st.Finished++; if ($played) { $st.Played++ }
+    $st.Finished++; if ($played) { $st.Played++; $script:gamesDone++ }
     if ($st.Finished -lt $st.Total) { return }
     $min = ((Get-Date) - $st.T0).TotalMinutes
     Log ("batch {0}: played {1} games in {2:N1} min ({3:N0} games/min)" -f $st.Job.job, $st.Played, $min, ($st.Played / [Math]::Max($min, 0.01)))
@@ -315,14 +328,33 @@ while ($true) {
         } elseif ($r -and $r.StatusCode -eq 200) {
             $job = $r.Content | ConvertFrom-Json
             $fetched++
+            if ($job.threads -and [int]$job.threads -gt 0) {
+                $want = [Math]::Min([int]$job.threads, $Ceiling)
+                if ($want -ne $Threads) { Log "server set the game workers to $want (this PC allows at most $Ceiling)"; $Threads = $want }
+            }
             Log "job $($job.job): $(@($job.games).Count) games from campaign $($job.campaign)"
             try {
                 $st = PrepareJob $job
                 $active++
-                if ($null -eq $curKey -or $st.Key -eq $curKey) { $curKey = $st.Key; foreach ($g in $job.games) { $queue.Enqueue(@($g, $st)) } }
+                $st | Add-Member -NotePropertyName Prio -NotePropertyValue ([int]$job.priority)
+                if ($null -eq $curKey -or $st.Key -eq $curKey) {
+                    $curKey = $st.Key
+                    # a higher-priority campaign (an experiment waiting on results) goes in front of bulk work
+                    $behind = @($queue.ToArray() | Where-Object { $_[1].Prio -ge $st.Prio })
+                    $after = @($queue.ToArray() | Where-Object { $_[1].Prio -lt $st.Prio })
+                    $queue.Clear()
+                    foreach ($x in $behind) { $queue.Enqueue($x) }
+                    foreach ($g in $job.games) { $queue.Enqueue(@($g, $st)) }
+                    foreach ($x in $after) { $queue.Enqueue($x) }
+                }
                 else { $hold = $st }
                 if ($Once) { $stop = $true }
-            } catch { Log "stopping: $($_.Exception.Message)"; $stop = $true }
+            } catch {
+                # e.g. the harness check refused the job, or GitHub was unreachable: play none of it (its lease expires
+                # and the server re-issues it), wait, and carry on
+                Log "skipping job $($job.job): $($_.Exception.Message); trying again in 5 min"
+                $nextFetch = (Get-Date).AddMinutes(5)
+            }
         }
     }
     # drop queued (not yet started) games of campaigns the orchestrator has withdrawn; running games just finish
@@ -369,22 +401,38 @@ while ($true) {
             # a timed-out game ends its JVM (by design); a game it never reported goes back on the queue
             if ($w.Cur) {
                 $g = $w.Cur[0]; $st = $w.Cur[1]
-                if (Test-Path (Join-Path $st.Outs "$($g.gid).jsonl")) { Finish $st $true }
+                if (Test-Path (Join-Path $st.Outs "$(SafeName $g.gid).jsonl")) { Finish $st $true }
                 else {
                     $tries[$g.gid] = 1 + [int]$tries[$g.gid]
                     if ($tries[$g.gid] -lt 3) { $queue.Enqueue($w.Cur) } else { Finish $st $false }
                 }
             }
             $w.Cur = $null; $w.Dead = $true
-        } elseif ($w.Ready -and -not $w.Cur -and $queue.Count -gt 0 -and $w.Key -eq $queue.Peek()[1].Key) {
+        } elseif ($w.Ready -and -not $w.Cur -and -not $w.Retiring -and $script:pool.Count -gt $Threads -and
+                  @($script:pool | Where-Object { -not $_.Retiring }).Count -gt $Threads) {
+            # more workers than the target: retire this idle one (it exits when its input closes)
+            $w | Add-Member -NotePropertyName Retiring -NotePropertyValue $true -Force
+            try { $w.P.StandardInput.Close() } catch { }
+        } elseif ($w.Ready -and -not $w.Cur -and -not $w.Retiring -and $queue.Count -gt 0 -and $w.Key -eq $queue.Peek()[1].Key) {
             $item = $queue.Dequeue(); $g = $item[0]; $st = $item[1]
             $w.P.StandardInput.WriteLine((($g.gid, (Join-Path $st.Decks "$($g.a).dck"), (Join-Path $st.Decks "$($g.b).dck"),
-                $g.seed, $g.index, $g.timeout, (Join-Path $st.Outs "$($g.gid).jsonl")) -join "`t"))
+                $g.seed, $g.index, $g.timeout, (Join-Path $st.Outs "$(SafeName $g.gid).jsonl")) -join "`t"))
             $w.P.StandardInput.Flush()
             $w.Cur = $item
         }
     }
     foreach ($w in @($script:pool | Where-Object { $_.Dead })) { $script:pool.Remove($w) }
+    if (-not $announcedReady -and $script:pool.Count -gt 0 -and @($script:pool | Where-Object { -not $_.Ready }).Count -eq 0) {
+        $announcedReady = $true; Log "$($script:pool.Count) game workers ready"
+    }
+    if ((Get-Date) -ge $nextProgress) {
+        $m = ((Get-Date) - $lastProg).TotalMinutes
+        if ($script:gamesDone -gt $lastDone) {
+            Log ("progress: {0} games done this session, {1:N0} games/min over the last {2:N0} min, {3} queued" -f `
+                 $script:gamesDone, (($script:gamesDone - $lastDone) / [Math]::Max($m, 0.01)), $m, $queue.Count)
+        }
+        $lastDone = $script:gamesDone; $lastProg = Get-Date; $nextProgress = (Get-Date).AddMinutes(3)
+    }
     foreach ($u in @($uploads)) {
         # an upload's errors are logged, never fatal: the games stay leased and the server re-issues them later
         $je = $null
