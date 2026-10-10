@@ -224,7 +224,9 @@ $UploadBlock = {
     $ErrorActionPreference = "Stop"; $ProgressPreference = "SilentlyContinue"
     [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
     $headers = @{ Authorization = "Bearer $Token" }
-    $games = @($gamesJson | ConvertFrom-Json)
+    # Windows PowerShell 5.1's ConvertFrom-Json emits a JSON array as ONE object; piping through ForEach-Object unrolls
+    # it on every PowerShell version (without this, 5.1 saw one "game" whose gid was all 550 gids: path too long)
+    $games = @($gamesJson | ConvertFrom-Json | ForEach-Object { $_ })
     # parts small enough for the server's request limit (8 MB): split a part in half until its zip fits
     $parts = New-Object System.Collections.ArrayList
     [void]$parts.Add(@($games | Where-Object { Test-Path (Join-Path $outs "$($_.gid).jsonl") }))
@@ -367,8 +369,11 @@ while ($true) {
     }
     foreach ($w in @($script:pool | Where-Object { $_.Dead })) { $script:pool.Remove($w) }
     foreach ($u in @($uploads)) {
-        Receive-Job $u | ForEach-Object { Log $_ }
-        if ($u.State -ne "Running") { Receive-Job $u | ForEach-Object { Log $_ }; Remove-Job $u; $uploads.Remove($u) }
+        # an upload's errors are logged, never fatal: the games stay leased and the server re-issues them later
+        $je = $null
+        Receive-Job $u -ErrorAction SilentlyContinue -ErrorVariable je | ForEach-Object { Log $_ }
+        foreach ($e in @($je)) { if ($e) { Log "upload error: $e" } }
+        if ($u.State -ne "Running") { Remove-Job $u -Force; $uploads.Remove($u) }
     }
     if ($stop -and $active -eq 0 -and $uploads.Count -eq 0) { StopPool; break }
     Start-Sleep -Milliseconds 200
