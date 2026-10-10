@@ -285,6 +285,7 @@ $tries = @{}
 $hold = $null; $curKey = $null; $active = 0
 $uploads = New-Object System.Collections.ArrayList
 $nextFetch = Get-Date; $fetched = 0; $stop = $false
+$nextWithdrawCheck = Get-Date
 
 function Finish($st, $played) {
     $st.Finished++; if ($played) { $st.Played++ }
@@ -323,6 +324,22 @@ while ($true) {
                 if ($Once) { $stop = $true }
             } catch { Log "stopping: $($_.Exception.Message)"; $stop = $true }
         }
+    }
+    # drop queued (not yet started) games of campaigns the orchestrator has withdrawn; running games just finish
+    if ((Get-Date) -ge $nextWithdrawCheck -and $queue.Count -gt 0) {
+        $nextWithdrawCheck = (Get-Date).AddSeconds(15)
+        try {
+            $wd = @((Invoke-RestMethod -Uri "$Server/api.php?a=withdrawn" -Headers $headers -UseBasicParsing -TimeoutSec 30).withdrawn)
+            if ($wd.Count -gt 0) {
+                $keep = New-Object System.Collections.Queue; $dropped = 0
+                while ($queue.Count -gt 0) {
+                    $item = $queue.Dequeue()
+                    if ($wd -contains $item[1].Job.campaign) { $dropped++; Finish $item[1] $false } else { $keep.Enqueue($item) }
+                }
+                $queue = $keep
+                if ($dropped) { Log "dropped $dropped queued games of withdrawn campaigns" }
+            }
+        } catch { }
     }
     # a batch needing another harness or settings waits until the current workers are idle, then restarts them
     if ($hold -and $queue.Count -eq 0 -and @($script:pool | Where-Object { $_.Cur }).Count -eq 0) {

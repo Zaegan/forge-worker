@@ -11,7 +11,9 @@
 // API (Authorization: Bearer <token>):
 //   GET  api.php?a=job&slots=N     200 job JSON, or 204 when there is no work
 //   POST api.php?a=result&job=ID   body: zip of results.jsonl + logs/   -> {"accepted", "duplicates"}
+//   GET  api.php?a=withdrawn       campaigns withdrawn by the orchestrator (workers drop their unstarted games)
 //   GET  api.php?a=status
+// meta.json may also set "per_slot" (games per worker slot per batch), "lease_s" and "withdrawn": true.
 umask(0);
 $DATA = getenv('FORGE_DATA') ?: realpath(__DIR__ . '/../../uploads') . '/forge';
 $LEASE = 1800;
@@ -42,13 +44,17 @@ function campaigns($DATA, $db) {
     foreach (glob("$DATA/campaigns/*/games.jsonl") as $f) {
         $d = dirname($f);
         $name = basename($d);
-        $out[$name] = json_decode(file_get_contents("$d/meta.json"), true);
+        $m = @json_decode(@file_get_contents("$d/meta.json"), true);
+        if (!is_array($m) || empty($m['harness'])) continue;   // not complete yet
+        $out[$name] = $m;
+        if (!empty($out[$name]['withdrawn'])) continue;   // withdrawn: nothing more is issued
         $mark = "$d/.registered";
         if (file_exists($mark) && filemtime($mark) >= filemtime($f)) continue;
         $db->exec('begin immediate');
         $st = $db->prepare('insert or ignore into games (campaign, gid) values (?, ?)');
         foreach (file($f, FILE_IGNORE_NEW_LINES | FILE_SKIP_EMPTY_LINES) as $l) {
             $g = json_decode($l, true);
+            if (!$g || !isset($g['gid'])) continue;   // a line still being appended
             $st->bindValue(1, $name); $st->bindValue(2, $g['gid']); $st->execute(); $st->reset();
         }
         $db->exec('commit');
@@ -67,8 +73,11 @@ if ($a === 'job') {
     $db->exec('begin immediate');
     $db->exec("update games set status='open', job=null, worker=null where status='leased' and lease_until < $now");
     foreach ($camps as $name => $meta) {
-        $st = $db->prepare("select gid from games where campaign=? and status='open' limit ?");
-        $st->bindValue(1, $name); $st->bindValue(2, $slots * $PER_SLOT);
+        if (!empty($meta['withdrawn'])) continue;
+        $per = intval($meta['per_slot'] ?? $PER_SLOT);
+        $lease = intval($meta['lease_s'] ?? $LEASE);
+        $st = $db->prepare("select gid from games where campaign=? and status='open' order by rowid limit ?");
+        $st->bindValue(1, $name); $st->bindValue(2, $slots * $per);
         $r = $st->execute();
         $gids = [];
         while ($row = $r->fetchArray(SQLITE3_NUM)) $gids[] = $row[0];
@@ -76,7 +85,7 @@ if ($a === 'job') {
         $job = bin2hex(random_bytes(8));
         $up = $db->prepare("update games set status='leased', job=?, worker=?, lease_until=? where campaign=? and gid=?");
         foreach ($gids as $g) {
-            $up->bindValue(1, $job); $up->bindValue(2, $worker); $up->bindValue(3, $now + $LEASE);
+            $up->bindValue(1, $job); $up->bindValue(2, $worker); $up->bindValue(3, $now + $lease);
             $up->bindValue(4, $name); $up->bindValue(5, $g); $up->execute(); $up->reset();
         }
         $ins = $db->prepare('insert into jobs values (?, ?, ?, ?, ?, null)');
@@ -88,13 +97,13 @@ if ($a === 'job') {
         $d = "$DATA/campaigns/$name";
         foreach (file("$d/games.jsonl", FILE_IGNORE_NEW_LINES | FILE_SKIP_EMPTY_LINES) as $l) {
             $g = json_decode($l, true);
-            if (!isset($want[$g['gid']])) continue;
+            if (!$g || !isset($g['gid']) || !isset($want[$g['gid']])) continue;
             $games[] = $g;
             foreach (['a', 'b'] as $k)
                 if (!isset($decks[$g[$k]])) $decks[$g[$k]] = file_get_contents("$d/decks/" . basename($g[$k]) . ".dck");
         }
         out(200, ['job' => $job, 'campaign' => $name, 'tweaks' => $meta['tweaks'] ?? '', 'harness' => $meta['harness'],
-                  'lease_s' => $LEASE, 'games' => $games, 'decks' => $decks]);
+                  'lease_s' => $lease, 'games' => $games, 'decks' => $decks]);
     }
     $db->exec('commit');
     out(204);
@@ -150,6 +159,15 @@ if ($a === 'result' && $_SERVER['REQUEST_METHOD'] === 'POST') {
     $z->close();
     unlink($tmp);
     out(200, ['accepted' => $acc, 'duplicates' => $dup]);
+}
+
+if ($a === 'withdrawn') {   // campaigns whose not-yet-started games workers should drop from their local queues
+    $w = [];
+    foreach (glob("$DATA/campaigns/*/meta.json") as $f) {
+        $m = json_decode(file_get_contents($f), true);
+        if (!empty($m['withdrawn'])) $w[] = basename(dirname($f));
+    }
+    out(200, ['withdrawn' => $w]);
 }
 
 if ($a === 'status') {
