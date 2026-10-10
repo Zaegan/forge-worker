@@ -205,61 +205,16 @@ function StopPool {
     $script:pool.Clear()
 }
 
-function PlayBatch($job) {
-    $jd = Join-Path $Dir "jobs/$($job.job)"
-    $decks = Join-Path $jd "decks"; $outs = Join-Path $jd "out"
-    New-Item -ItemType Directory -Force -Path $decks, $outs | Out-Null
-    foreach ($p in $job.decks.PSObject.Properties) {
-        [IO.File]::WriteAllText((Join-Path $decks "$($p.Name).dck"), $p.Value)
-    }
-    $classes = Harness $job.harness
-    $key = "$($job.harness)|$($job.tweaks)"
-    if (@($script:pool | Where-Object { $_.Key -ne $key }).Count -gt 0) { Log "new harness or settings: restarting the game workers"; StopPool }
-    $queue = New-Object System.Collections.Queue
-    foreach ($g in $job.games) { $queue.Enqueue($g) }
-    $tries = @{}
-    $t0 = Get-Date; $done = 0
-    while ($queue.Count -gt 0 -or @($script:pool | Where-Object { $_.Cur }).Count -gt 0) {
-        while ($script:pool.Count -lt $Threads -and $queue.Count -gt @($script:pool | Where-Object { -not $_.Cur }).Count) {
-            [void]$script:pool.Add((StartWorker $classes $job.tweaks $key))
-        }
-        foreach ($w in @($script:pool)) {
-            while ($w.Err.IsCompleted -and $w.Err.Result -ne $null) { $w.Err = $w.P.StandardError.ReadLineAsync() }
-            while ($w.Out.IsCompleted -and $w.Out.Result -ne $null) {
-                $line = $w.Out.Result
-                if ($line -eq "@@READY") { $w.Ready = $true }
-                elseif ($line.StartsWith("@@DONE ") -or $line.StartsWith("@@FAIL ")) {
-                    if ($line.StartsWith("@@FAIL ") -and $w.Cur) {
-                        $tries[$w.Cur.gid] = 1 + [int]$tries[$w.Cur.gid]
-                        if ($tries[$w.Cur.gid] -lt 3) { $queue.Enqueue($w.Cur) }
-                    } else { $done++ }
-                    $w.Cur = $null
-                }
-                $w.Out = $w.P.StandardOutput.ReadLineAsync()
-            }
-            if ($w.P.HasExited) {
-                # a timed-out game ends its JVM (by design); a game it never reported goes back on the queue
-                if ($w.Cur -and -not (Test-Path (Join-Path $outs "$($w.Cur.gid).jsonl"))) {
-                    $tries[$w.Cur.gid] = 1 + [int]$tries[$w.Cur.gid]
-                    if ($tries[$w.Cur.gid] -lt 3) { $queue.Enqueue($w.Cur) }
-                } elseif ($w.Cur) { $done++ }
-                $w.Cur = $null; $w.Dead = $true
-            } elseif ($w.Ready -and -not $w.Cur -and $queue.Count -gt 0) {
-                $g = $queue.Dequeue()
-                $w.P.StandardInput.WriteLine((($g.gid, (Join-Path $decks "$($g.a).dck"), (Join-Path $decks "$($g.b).dck"),
-                    $g.seed, $g.index, $g.timeout, (Join-Path $outs "$($g.gid).jsonl")) -join "`t"))
-                $w.P.StandardInput.Flush()
-                $w.Cur = $g
-            }
-        }
-        foreach ($w in @($script:pool | Where-Object { $_.Dead })) { $script:pool.Remove($w) }
-        Start-Sleep -Milliseconds 200
-    }
-    $min = ((Get-Date) - $t0).TotalMinutes
-    Log ("played {0} games in {1:N1} min ({2:N0} games/min)" -f $done, $min, ($done / [Math]::Max($min, 0.01)))
-    # upload in parts small enough for the server's request limit (8 MB): split a part in half until its zip fits
+# ---- uploads run in the background (a separate PowerShell), so the game workers never wait for them ----
+$UploadBlock = {
+    param($jd, $outs, $logs, $gamesJson, $jobId, $Server, $Token)
+    $ErrorActionPreference = "Stop"; $ProgressPreference = "SilentlyContinue"
+    [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
+    $headers = @{ Authorization = "Bearer $Token" }
+    $games = @($gamesJson | ConvertFrom-Json)
+    # parts small enough for the server's request limit (8 MB): split a part in half until its zip fits
     $parts = New-Object System.Collections.ArrayList
-    [void]$parts.Add(@($job.games | Where-Object { Test-Path (Join-Path $outs "$($_.gid).jsonl") }))
+    [void]$parts.Add(@($games | Where-Object { Test-Path (Join-Path $outs "$($_.gid).jsonl") }))
     $p = 0; $ok = $true
     while ($p -lt $parts.Count) {
         $part = $parts[$p]
@@ -283,34 +238,125 @@ function PlayBatch($job) {
         $sent = $false
         for ($try = 0; $try -lt 5 -and -not $sent; $try++) {
             try {
-                $r = Invoke-WebRequest -Uri "$Server/api.php?a=result&job=$($job.job)&part=$p" -Method Post -InFile $zip `
+                $r = Invoke-WebRequest -Uri "$Server/api.php?a=result&job=$jobId&part=$p" -Method Post -InFile $zip `
                      -ContentType "application/zip" -Headers $headers -UseBasicParsing -TimeoutSec 600
-                Log "uploaded $($job.job) part $p ($($part.Count) games): $($r.Content)"
+                "uploaded $jobId part $p ($($part.Count) games): $($r.Content)"
                 $sent = $true
-            } catch { Log "upload failed ($($_.Exception.Message)); retrying in 60 s"; Start-Sleep 60 }
+            } catch { "upload of $jobId failed ($($_.Exception.Message)); retrying in 60 s"; Start-Sleep 60 }
         }
         if (-not $sent) { $ok = $false }
         $p++
     }
     if ($ok) {
-        foreach ($g in $job.games) { Get-ChildItem $logs -Filter "$($g.a)_vs_$($g.b)_$($g.seed)_$($g.index).*" | Remove-Item }
+        foreach ($g in $games) { Get-ChildItem $logs -Filter "$($g.a)_vs_$($g.b)_$($g.seed)_$($g.index).*" | Remove-Item }
         Remove-Item $jd -Recurse -Force
-    } else { Log "some uploads failed; the files stay in $jd" }
+    } else { "some uploads of $jobId failed; its files stay in $jd" }
+}
+
+function PrepareJob($job) {
+    $jd = Join-Path $Dir "jobs/$($job.job)"
+    $decks = Join-Path $jd "decks"; $outs = Join-Path $jd "out"
+    New-Item -ItemType Directory -Force -Path $decks, $outs | Out-Null
+    foreach ($p in $job.decks.PSObject.Properties) { [IO.File]::WriteAllText((Join-Path $decks "$($p.Name).dck"), $p.Value) }
+    $classes = Harness $job.harness
+    return [pscustomobject]@{ Job = $job; Jd = $jd; Decks = $decks; Outs = $outs; Classes = $classes
+                              Key = "$($job.harness)|$($job.tweaks)"; Total = @($job.games).Count; Finished = 0; Played = 0
+                              T0 = Get-Date }
+}
+
+# ---- the scheduler: one shared queue across batches; the next batch is fetched before this one runs dry ----
+$queue = New-Object System.Collections.Queue
+$tries = @{}
+$hold = $null; $curKey = $null; $active = 0
+$uploads = New-Object System.Collections.ArrayList
+$nextFetch = Get-Date; $fetched = 0; $stop = $false
+
+function Finish($st, $played) {
+    $st.Finished++; if ($played) { $st.Played++ }
+    if ($st.Finished -lt $st.Total) { return }
+    $min = ((Get-Date) - $st.T0).TotalMinutes
+    Log ("batch {0}: played {1} games in {2:N1} min ({3:N0} games/min)" -f $st.Job.job, $st.Played, $min, ($st.Played / [Math]::Max($min, 0.01)))
+    $gj = ConvertTo-Json -InputObject @($st.Job.games) -Compress -Depth 4
+    [void]$uploads.Add((Start-Job -ScriptBlock $UploadBlock -ArgumentList $st.Jd, $st.Outs, $logs, $gj, $st.Job.job, $Server, $Token))
+    $script:active--
 }
 
 while ($true) {
-    try {
-        $r = Invoke-WebRequest -Uri "$Server/api.php?a=job&slots=$Threads&v=$ClientVersion" -Headers $headers -UseBasicParsing -TimeoutSec 120
-    } catch {
-        if ($_.Exception.Response -and [int]$_.Exception.Response.StatusCode -eq 426) {
-            Log "the server needs a newer forge-worker: run 'Update Forge Worker' (it shows the changes and asks first)"; break
+    # fetch the next batch while the current one still has work queued (no idle gap between batches)
+    if (-not $stop -and -not $hold -and $queue.Count -lt $Threads -and (Get-Date) -ge $nextFetch -and -not ($Once -and $fetched -gt 0)) {
+        $r = $null
+        try {
+            $r = Invoke-WebRequest -Uri "$Server/api.php?a=job&slots=$Threads&v=$ClientVersion" -Headers $headers -UseBasicParsing -TimeoutSec 120
+        } catch {
+            if ($_.Exception.Response -and [int]$_.Exception.Response.StatusCode -eq 426) {
+                Log "the server needs a newer forge-worker: run 'Update Forge Worker' (it shows the changes and asks first)"; $stop = $true
+            } else { Log "server unreachable ($($_.Exception.Message)); retrying in 60 s"; $nextFetch = (Get-Date).AddSeconds(60) }
         }
-        Log "server unreachable ($($_.Exception.Message)); retrying in 60 s"; Start-Sleep 60; continue
+        if ($r -and $r.StatusCode -eq 204) {
+            if ($active -eq 0 -and $queue.Count -eq 0) { Log "no work; checking again in 5 min" }
+            if ($Once -and $active -eq 0) { $stop = $true }
+            $nextFetch = (Get-Date).AddMinutes(5)
+        } elseif ($r -and $r.StatusCode -eq 200) {
+            $job = $r.Content | ConvertFrom-Json
+            $fetched++
+            Log "job $($job.job): $(@($job.games).Count) games from campaign $($job.campaign)"
+            try {
+                $st = PrepareJob $job
+                $active++
+                if ($null -eq $curKey -or $st.Key -eq $curKey) { $curKey = $st.Key; foreach ($g in $job.games) { $queue.Enqueue(@($g, $st)) } }
+                else { $hold = $st }
+                if ($Once) { $stop = $true }
+            } catch { Log "stopping: $($_.Exception.Message)"; $stop = $true }
+        }
     }
-    if ($r.StatusCode -eq 204) { Log "no work; checking again in 5 min"; if ($Once) { break }; Start-Sleep 300; continue }
-    $job = $r.Content | ConvertFrom-Json
-    Log "job $($job.job): $($job.games.Count) games from campaign $($job.campaign)"
-    try { PlayBatch $job }
-    catch { Log "stopping: $($_.Exception.Message)"; StopPool; break }
-    if ($Once) { break }
+    # a batch needing another harness or settings waits until the current workers are idle, then restarts them
+    if ($hold -and $queue.Count -eq 0 -and @($script:pool | Where-Object { $_.Cur }).Count -eq 0) {
+        Log "new harness or settings: restarting the game workers"; StopPool
+        $curKey = $hold.Key; foreach ($g in $hold.Job.games) { $queue.Enqueue(@($g, $hold)) }; $hold = $null
+    }
+    while ($queue.Count -gt 0 -and $script:pool.Count -lt $Threads -and $queue.Count -gt @($script:pool | Where-Object { -not $_.Cur }).Count) {
+        $st0 = $queue.Peek()[1]
+        [void]$script:pool.Add((StartWorker $st0.Classes $st0.Job.tweaks $st0.Key))
+    }
+    foreach ($w in @($script:pool)) {
+        while ($w.Err.IsCompleted -and $w.Err.Result -ne $null) { $w.Err = $w.P.StandardError.ReadLineAsync() }
+        while ($w.Out.IsCompleted -and $w.Out.Result -ne $null) {
+            $line = $w.Out.Result
+            if ($line -eq "@@READY") { $w.Ready = $true }
+            elseif (($line.StartsWith("@@DONE ") -or $line.StartsWith("@@FAIL ")) -and $w.Cur) {
+                $g = $w.Cur[0]; $st = $w.Cur[1]
+                if ($line.StartsWith("@@FAIL ")) {
+                    $tries[$g.gid] = 1 + [int]$tries[$g.gid]
+                    if ($tries[$g.gid] -lt 3) { $queue.Enqueue($w.Cur) } else { Finish $st $false }
+                } else { Finish $st $true }
+                $w.Cur = $null
+            }
+            $w.Out = $w.P.StandardOutput.ReadLineAsync()
+        }
+        if ($w.P.HasExited) {
+            # a timed-out game ends its JVM (by design); a game it never reported goes back on the queue
+            if ($w.Cur) {
+                $g = $w.Cur[0]; $st = $w.Cur[1]
+                if (Test-Path (Join-Path $st.Outs "$($g.gid).jsonl")) { Finish $st $true }
+                else {
+                    $tries[$g.gid] = 1 + [int]$tries[$g.gid]
+                    if ($tries[$g.gid] -lt 3) { $queue.Enqueue($w.Cur) } else { Finish $st $false }
+                }
+            }
+            $w.Cur = $null; $w.Dead = $true
+        } elseif ($w.Ready -and -not $w.Cur -and $queue.Count -gt 0 -and $w.Key -eq $queue.Peek()[1].Key) {
+            $item = $queue.Dequeue(); $g = $item[0]; $st = $item[1]
+            $w.P.StandardInput.WriteLine((($g.gid, (Join-Path $st.Decks "$($g.a).dck"), (Join-Path $st.Decks "$($g.b).dck"),
+                $g.seed, $g.index, $g.timeout, (Join-Path $st.Outs "$($g.gid).jsonl")) -join "`t"))
+            $w.P.StandardInput.Flush()
+            $w.Cur = $item
+        }
+    }
+    foreach ($w in @($script:pool | Where-Object { $_.Dead })) { $script:pool.Remove($w) }
+    foreach ($u in @($uploads)) {
+        Receive-Job $u | ForEach-Object { Log $_ }
+        if ($u.State -ne "Running") { Receive-Job $u | ForEach-Object { Log $_ }; Remove-Job $u; $uploads.Remove($u) }
+    }
+    if ($stop -and $active -eq 0 -and $uploads.Count -eq 0) { StopPool; break }
+    Start-Sleep -Milliseconds 200
 }
