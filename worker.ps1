@@ -25,7 +25,8 @@ param(
     [switch]$Once,                          # play one batch and exit (testing)
     [switch]$Install,                       # save -Server/-Token and put a "Forge Worker" shortcut on the Desktop
     [switch]$Uninstall,                     # remove the Desktop shortcut (downloads and settings are kept)
-    [switch]$Update                         # review and (after you confirm) install the newest worker.ps1; does not start work
+    [switch]$Update,                        # review and (after you confirm) install the newest worker.ps1; does not start work
+    [int]$IdleWait = 20                     # seconds to wait before asking again when the server has no work
 )
 $ClientVersion = 3                          # the server can ask clients older than its minimum to update
 $ErrorActionPreference = "Stop"
@@ -322,12 +323,12 @@ while ($true) {
             } else { Log "server unreachable ($($_.Exception.Message)); retrying in 60 s"; $nextFetch = (Get-Date).AddSeconds(60) }
         }
         if ($r -and $r.StatusCode -eq 204) {
-            if ($active -eq 0 -and $queue.Count -eq 0) { Log "no work; checking again in 5 min" }
+            if ($active -eq 0 -and $queue.Count -eq 0 -and -not $script:saidNoWork) { Log "no work right now; checking every $IdleWait s"; $script:saidNoWork = $true }
             if ($Once -and $active -eq 0) { $stop = $true }
-            $nextFetch = (Get-Date).AddMinutes(5)
+            $nextFetch = (Get-Date).AddSeconds($IdleWait)
         } elseif ($r -and $r.StatusCode -eq 200) {
             $job = $r.Content | ConvertFrom-Json
-            $fetched++
+            $fetched++; $script:saidNoWork = $false
             if ($job.threads -and [int]$job.threads -gt 0) {
                 $want = [Math]::Min([int]$job.threads, $Ceiling)
                 if ($want -ne $Threads) { Log "server set the game workers to $want (this PC allows at most $Ceiling)"; $Threads = $want }
