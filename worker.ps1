@@ -148,7 +148,8 @@ function Harness($commit) {
         if ($commit -notmatch '^[0-9a-f]{40}$') { throw "refusing harness '$commit': not a full commit id" }
         # only compile a commit that is part of $Repo's own main branch: compare main...commit is "behind" or
         # "identical" exactly when the commit is an ancestor of main (a fork's commit is "diverged" or unknown)
-        $cmp = Invoke-RestMethod -Uri "https://api.github.com/repos/$Repo/compare/main...$commit" -UseBasicParsing -TimeoutSec 60
+        try { $cmp = Invoke-RestMethod -Uri "https://api.github.com/repos/$Repo/compare/main...$commit" -UseBasicParsing -TimeoutSec 60 }
+        catch { throw "refusing harness $commit`: GitHub does not know it as part of $Repo ($($_.Exception.Message))" }
         if ($cmp.status -ne "behind" -and $cmp.status -ne "identical") {
             throw "refusing harness $commit`: it is not on $Repo's main branch (status '$($cmp.status)')"
         }
@@ -309,6 +310,7 @@ while ($true) {
     if ($r.StatusCode -eq 204) { Log "no work; checking again in 5 min"; if ($Once) { break }; Start-Sleep 300; continue }
     $job = $r.Content | ConvertFrom-Json
     Log "job $($job.job): $($job.games.Count) games from campaign $($job.campaign)"
-    PlayBatch $job
+    try { PlayBatch $job }
+    catch { Log "stopping: $($_.Exception.Message)"; StopPool; break }
     if ($Once) { break }
 }
