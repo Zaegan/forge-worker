@@ -268,6 +268,51 @@ public class LeylineBrain {
         return null;
     }
 
+    /**
+     * Tweak "leylinemull" (the user's rule, 2026-10-10): each mulligan drops the strictest requirement. MULLIGANS taken so
+     * far: 0 -> Leyline of Resonance + a creature + a land; 1 -> a creature + a land; 2 -> a land; 3+ -> keep.
+     * (measure-leyline-brain: a Leyline in the opening hand was worth +11 to +25 points per matchup.)
+     */
+    static boolean keepHand(Player me, int mulligans) {
+        boolean ley = false, body = false, land = false;
+        for (Card c : me.getCardsIn(ZoneType.Hand)) {
+            if (named(c, LEYLINE)) ley = true;
+            if (c.isCreature()) body = true;
+            if (c.isLand()) land = true;
+        }
+        boolean keep = mulligans >= 3 || (land && (mulligans >= 2 || (body && (mulligans >= 1 || ley))));
+        ControlBrain.count("leyline_mull_" + mulligans + (keep ? "_keep" : "_mull"));
+        return keep;
+    }
+
+    /** London mulligan bottom: Forge's choice, but never a Leyline of Resonance, nor the last creature or last land. */
+    static forge.game.card.CardCollectionView tuck(forge.game.card.CardCollectionView hand,
+                                                  forge.game.card.CardCollectionView chosen, int n) {
+        CardCollection out = new CardCollection(chosen);
+        CardCollection kept = new CardCollection(hand);
+        kept.removeAll(out);
+        java.util.function.Predicate<Card> protectedCard = c -> named(c, LEYLINE)
+                || (c.isCreature() && kept.stream().filter(Card::isCreature).count() <= 1)
+                || (c.isLand() && kept.stream().filter(Card::isLand).count() <= 1);
+        for (Card c : new ArrayList<>(out)) {
+            kept.add(c);   // as if it stayed: is it the one we must keep?
+            boolean must = named(c, LEYLINE) || (c.isCreature() && kept.stream().filter(Card::isCreature).count() <= 1)
+                    || (c.isLand() && kept.stream().filter(Card::isLand).count() <= 1);
+            kept.remove(c);
+            if (!must) continue;
+            Card swap = null;   // the most expensive kept card that is not itself needed
+            for (Card k : kept) {
+                if (protectedCard.test(k)) continue;
+                if (swap == null || k.getCMC() > swap.getCMC()) swap = k;
+            }
+            if (swap == null) continue;
+            out.remove(c); out.add(swap);
+            kept.remove(swap); kept.add(c);
+            ControlBrain.count("leyline_tuck_swap");
+        }
+        return out;
+    }
+
     static final java.util.Set<String> SPEND_MAIN1 = java.util.Set.of(PYM, ANGER, "Wild Ride"),
             SPEND_COMBAT = java.util.Set.of("Turn Inside Out", "Might of the Meek", BULK);
 
