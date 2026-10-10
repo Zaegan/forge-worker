@@ -117,6 +117,38 @@ function order_campaigns($camps, $wts, $open) {
     return array_merge($order, $rest);
 }
 
+// A worker restarts its game workers whenever a job needs another harness or AI settings (meta tweaks), so each
+// machine keeps one setting for at least $DWELL seconds: while that holds and the setting still has work, it is only
+// offered campaigns with it (in their weighted order). When the time is up the full weighted order decides again,
+// so over time every setting gets its weighted share and a machine restarts at most once per $DWELL.
+$DWELL = 900;
+function setting_of($m) { return ($m['harness'] ?? '') . '|' . ($m['tweaks'] ?? ''); }
+function dwell_filter($db, $worker, $camps, $order, $now) {
+    global $DWELL;
+    $db->exec('create table if not exists worker_setting (worker text primary key, setting text, since real)');
+    $st = $db->prepare('select setting, since from worker_setting where worker=?');
+    $st->bindValue(1, $worker);
+    $row = $st->execute()->fetchArray(SQLITE3_NUM);
+    if ($row && $now - $row[1] < $DWELL) {
+        $same = array_values(array_filter($order, fn($n) => setting_of($camps[$n]) === $row[0]));
+        if ($same) return [$same, false];
+    }
+    return [$order, true];
+}
+function remember_setting($db, $worker, $setting, $now, $fresh) {
+    $st = $db->prepare('select setting from worker_setting where worker=?');
+    $st->bindValue(1, $worker);
+    $row = $st->execute()->fetchArray(SQLITE3_NUM);
+    if ($row && $row[0] === $setting && !$fresh) return;
+    if ($row && $row[0] === $setting && $fresh) {   // the new draw kept the setting: a new slice starts now
+        $u = $db->prepare('update worker_setting set since=? where worker=?');
+        $u->bindValue(1, $now); $u->bindValue(2, $worker); $u->execute();
+        return;
+    }
+    $u = $db->prepare('insert or replace into worker_setting values (?, ?, ?)');
+    $u->bindValue(1, $worker); $u->bindValue(2, $setting); $u->bindValue(3, $now); $u->execute();
+}
+
 function open_counts($db) {
     $open = [];
     $r = $db->query("select campaign, count(*) from games where status='open' group by campaign");
@@ -133,7 +165,7 @@ if ($a === 'job') {
     $now = microtime(true);
     $db->exec('begin immediate');
     $db->exec("update games set status='open', job=null, worker=null where status='leased' and lease_until < $now");
-    $order = order_campaigns($camps, $wts, open_counts($db));
+    [$order, $fresh] = dwell_filter($db, $worker, $camps, order_campaigns($camps, $wts, open_counts($db)), $now);
     foreach ($order as $name) {
         $meta = $camps[$name];
         $meta['priority'] = $wts[$name]['priority'];
@@ -155,6 +187,7 @@ if ($a === 'job') {
         $ins = $db->prepare('insert into jobs values (?, ?, ?, ?, ?, null)');
         $ins->bindValue(1, $job); $ins->bindValue(2, $name); $ins->bindValue(3, $worker);
         $ins->bindValue(4, $now); $ins->bindValue(5, count($gids)); $ins->execute();
+        remember_setting($db, $worker, setting_of($meta), $now, $fresh);
         $db->exec('commit');
         $want = array_flip($gids);
         $games = []; $decks = [];
