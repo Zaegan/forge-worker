@@ -158,6 +158,9 @@ if ($a === 'status') {
     while ($row = $r->fetchArray(SQLITE3_NUM)) $c[$row[0]][$row[1]] = $row[2];
     $r = $db->query("select worker, count(*), max(done_at) from games where status='done' group by worker");
     while ($row = $r->fetchArray(SQLITE3_NUM)) $w[$row[0]] = ['games' => $row[1], 'last' => $row[2]];
-    out(200, ['campaigns' => $c, 'workers' => $w]);
+    $j = [];
+    $r = $db->query("select job, worker, campaign, n, created, done from jobs order by created desc limit 20");
+    while ($row = $r->fetchArray(SQLITE3_ASSOC)) $j[] = $row;
+    out(200, ['campaigns' => $c, 'workers' => $w, 'recent_jobs' => $j]);
 }
 out(404, ['error' => 'not found']);
