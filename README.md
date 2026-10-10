@@ -8,8 +8,11 @@ Lends a Windows PC's spare CPU to the forge-sim project: it plays [Forge](https:
 You need: Windows 10 or 11, an internet connection, and a token from the project owner (one per PC).
 
 ```
-powershell -ExecutionPolicy Bypass -File worker.ps1 -Server <server URL> -Token <your token>
+run-worker.cmd -Server <server URL> -Token <your token>
 ```
+
+(or `powershell -ExecutionPolicy Bypass -File worker.ps1 ...`; running `./worker.ps1` directly is blocked by Windows'
+default script policy.)
 
 The first run downloads, into `%LOCALAPPDATA%\forge-worker` (nothing is installed, no admin rights):
 - a portable Java 21 (Eclipse Temurin, from adoptium.net),
