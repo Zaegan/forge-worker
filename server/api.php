@@ -97,9 +97,14 @@ function order_campaigns($camps, $wts, $open) {
         $w = $wts[$n];
         if ($w['weight'] > 0) $groups[$w['group']][] = $n; else $rest[] = $n;
     }
-    // weighted random order of the groups (Efraimidis-Spirakis: key u^(1/w), largest first)
+    // weighted random order of the groups (Efraimidis-Spirakis: key u^(1/w), largest first). Weights are shares of
+    // GAMES: a job holds per_slot games per worker slot, so a group is drawn with probability weight / per_slot.
+    global $PER_SLOT;
     $key = [];
-    foreach ($groups as $g => $ns) $key[$g] = pow(mt_rand(1, mt_getrandmax()) / mt_getrandmax(), 1.0 / $wts[$ns[0]]['weight']);
+    foreach ($groups as $g => $ns) {
+        $w = $wts[$ns[0]]['weight'] / max(1, intval($camps[$ns[0]]['per_slot'] ?? $PER_SLOT));
+        $key[$g] = pow(mt_rand(1, mt_getrandmax()) / mt_getrandmax(), 1.0 / $w);
+    }
     arsort($key);
     $order = [];
     foreach (array_keys($key) as $g) {
@@ -236,15 +241,16 @@ if ($a === 'shares') {   // expected share of jobs per group right now: 2000 sim
     $camps = campaigns($DATA, $db);
     $wts = weights_of($DATA, $camps);
     $open = open_counts($db);
-    $first = [];
-    for ($i = 0; $i < 2000; $i++) {
+    $first = []; $tot = 0;
+    for ($i = 0; $i < 2000; $i++) {   // games per draw = per_slot (x the slots, the same for every campaign)
         $o = order_campaigns($camps, $wts, $open);
         if (!$o) break;
         $g = $wts[$o[0]]['group'] ?? "fallback:$o[0]";
-        $first[$g] = ($first[$g] ?? 0) + 1;
+        $n = max(1, intval($camps[$o[0]]['per_slot'] ?? $PER_SLOT));
+        $first[$g] = ($first[$g] ?? 0) + $n; $tot += $n;
     }
     arsort($first);
-    foreach ($first as $g => $c) $first[$g] = round($c / 2000, 3);
+    foreach ($first as $g => $c) $first[$g] = round($c / max(1, $tot), 3);
     out(200, ['shares' => $first]);
 }
 
