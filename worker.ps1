@@ -160,7 +160,10 @@ if (-not (Test-Path $jar)) { throw "Forge jar not found in $ForgeDir" }
 function Harness($commit) {
     $dir = Join-Path $Dir "harness/$commit"
     $classes = Join-Path $dir "classes"
-    if (Test-Path (Join-Path $classes "MatchWorker.class")) { return $classes }
+    if (Test-Path (Join-Path $classes "MatchWorker.class")) {
+        try { (Get-Item $dir).LastWriteTime = Get-Date } catch { }   # most recently USED: housekeeping keeps these
+        return $classes
+    }
     if (-not $HarnessSrc) {
         if ($commit -notmatch '^[0-9a-f]{40}$') { throw "refusing harness '$commit': not a full commit id" }
         # only compile a commit that is part of $Repo's own main branch: compare main...commit is "behind" or
@@ -205,17 +208,33 @@ Log "forge-worker: $Threads game workers (at most $Ceiling), home $Dir"
 $script:pool = New-Object System.Collections.ArrayList
 $logs = Join-Path $Dir "logs"
 New-Item -ItemType Directory -Force -Path $logs | Out-Null
-# leftovers of earlier sessions (a window closed mid-batch, or an upload that failed five times) would otherwise stay
-# on this PC forever: their leases have long expired and the server has handed those games out again
-$cut = (Get-Date).AddDays(-1); $freed = 0
-foreach ($old in @(Get-ChildItem (Join-Path $Dir "jobs") -Directory -ErrorAction SilentlyContinue | Where-Object { $_.LastWriteTime -lt $cut })) {
-    $freed += (Get-ChildItem $old.FullName -Recurse -File -ErrorAction SilentlyContinue | Measure-Object Length -Sum).Sum
-    Remove-Item $old.FullName -Recurse -Force -ErrorAction SilentlyContinue
+# Housekeeping, at startup and every hour, so nothing on this PC grows without limit:
+# - job folders and logs over a day old (a window closed mid-batch, or an upload that failed five times): their
+#   leases have long expired and the server has handed those games out again;
+# - worker.log over 20 MB becomes worker.old.log (one previous file kept);
+# - compiled harness versions other than the three most recently used (every job touches its version's folder).
+function Housekeeping {
+    $cut = (Get-Date).AddDays(-1); $freed = 0
+    foreach ($old in @(Get-ChildItem (Join-Path $Dir "jobs") -Directory -ErrorAction SilentlyContinue | Where-Object { $_.LastWriteTime -lt $cut })) {
+        $freed += (Get-ChildItem $old.FullName -Recurse -File -ErrorAction SilentlyContinue | Measure-Object Length -Sum).Sum
+        Remove-Item $old.FullName -Recurse -Force -ErrorAction SilentlyContinue
+    }
+    foreach ($old in @(Get-ChildItem $logs -File -ErrorAction SilentlyContinue | Where-Object { $_.LastWriteTime -lt $cut })) {
+        $freed += $old.Length; Remove-Item $old.FullName -Force -ErrorAction SilentlyContinue
+    }
+    foreach ($old in @(Get-ChildItem (Join-Path $Dir "harness") -Directory -ErrorAction SilentlyContinue | Sort-Object LastWriteTime -Descending | Select-Object -Skip 3)) {
+        $freed += (Get-ChildItem $old.FullName -Recurse -File -ErrorAction SilentlyContinue | Measure-Object Length -Sum).Sum
+        Remove-Item $old.FullName -Recurse -Force -ErrorAction SilentlyContinue
+    }
+    try {
+        if ((Test-Path $script:LogFile) -and (Get-Item $script:LogFile).Length -gt 20MB) {
+            Move-Item $script:LogFile (Join-Path $Dir "worker.old.log") -Force
+        }
+    } catch { }
+    if ($freed -gt 0) { Log ("housekeeping: removed {0:N0} MB" -f ($freed / 1MB)) }
 }
-foreach ($old in @(Get-ChildItem $logs -File -ErrorAction SilentlyContinue | Where-Object { $_.LastWriteTime -lt $cut })) {
-    $freed += $old.Length; Remove-Item $old.FullName -Force -ErrorAction SilentlyContinue
-}
-if ($freed -gt 0) { Log ("removed {0:N0} MB of leftovers from earlier sessions" -f ($freed / 1MB)) }
+Housekeeping
+$nextHousekeeping = (Get-Date).AddHours(1)
 
 function StartWorker($classes, $tweaks, $key) {
     $psi = New-Object System.Diagnostics.ProcessStartInfo
@@ -446,6 +465,7 @@ while ($true) {
     if (-not $announcedReady -and $script:pool.Count -gt 0 -and @($script:pool | Where-Object { -not $_.Ready }).Count -eq 0) {
         $announcedReady = $true; Log "$($script:pool.Count) game workers ready"
     }
+    if ((Get-Date) -ge $nextHousekeeping) { Housekeeping; $nextHousekeeping = (Get-Date).AddHours(1) }
     if ((Get-Date) -ge $nextProgress) {
         $m = ((Get-Date) - $lastProg).TotalMinutes
         if ($script:gamesDone -gt $lastDone) {
