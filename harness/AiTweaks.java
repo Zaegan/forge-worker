@@ -31,6 +31,9 @@ import java.util.List;
  *
  * leyline — LeylineBrain's lethal pump turn and Burn Together for Izzet Leyline.
  * leylinespend — with leyline: on non-lethal turns, spend surplus mana on damage pumps for evasive/unblocked attackers.
+ * leyburn / leyotter / leydig / leyland — with leyline, fixes from reading losses (LeylineBrain): no Burn Together on
+ * our own creature before combat, and "attack, then Burn Together to the face" counted as lethal; Elusive Otter pumped
+ * past every blocker; cantrip pumps cast to dig when stuck; the land drop that lets a cheap creature be cast.
  * leylinemull[A-D,S] — Izzet Leyline's mulligans (LeylineBrain.keepHand; A, the default: the 7-card hand needs Leyline
  * of Resonance, a creature and a land; after one mulligan a creature and a land; after two a land; then keep. S: the
  * exact optimal strategy for the 10-criteria hand score, goldfish/mull_opt.py).
@@ -107,9 +110,10 @@ public class AiTweaks {
                     ControlBrain.count("hall_veto");
                     return null;
                 }
-                return ai;
+                return TWEAKS.contains("leyline") ? LeylineBrain.post(getPlayer(), ai) : ai;
             }
-            return super.chooseSpellAbilityToPlay();
+            List<SpellAbility> ai = super.chooseSpellAbilityToPlay();
+            return TWEAKS.contains("leyline") ? LeylineBrain.post(getPlayer(), ai) : ai;
         }
 
         @Override

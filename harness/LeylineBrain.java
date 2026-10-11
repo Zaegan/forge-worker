@@ -216,12 +216,17 @@ public class LeylineBrain {
         // the deck has no mana creatures, so count untapped lands that tap for mana
         int mana = (int) me.getCardsIn(ZoneType.Battlefield).stream()
                 .filter(c -> c.isLand() && c.isUntapped() && !c.getManaAbilities().isEmpty()).count();
-        if (ph == PhaseType.MAIN2) return burn(me, op);
+        if (ph == PhaseType.MAIN2) {
+            SpellAbility b = burn(me, op);
+            if (b == null && AiTweaks.TWEAKS.contains("leydig")) b = dig(me, mana);
+            return b;
+        }
         if (ph == PhaseType.MAIN1) {
             long other = 0;
             List<Card> attackers = new ArrayList<>();
             for (Card c : me.getCreaturesInPlay()) if (canAttackNow(c)) attackers.add(c);
             for (Card c : attackers) if (unblockable(c, op)) other += c.getNetPower();
+            boolean burnLater = AiTweaks.TWEAKS.contains("leyburn") && burnInHand(me);
             for (Card t : attackers) {
                 boolean free = unblockable(t, op);
                 List<Step> avail = pumps(me, t, false);
@@ -229,6 +234,15 @@ public class LeylineBrain {
                 Plan p = plan(me, t, avail, mana, !free);
                 if (p == null || p.steps.isEmpty()) continue;
                 long dmg = p.power + other - (free ? t.getNetPower() : 0);
+                if (dmg < op.getLife() && burnLater && mana >= 2) {
+                    // attack, then Burn Together (R) to the face with the same pumped creature: its power counts twice
+                    Plan q = plan(me, t, avail, mana - 1, !free);
+                    if (q != null && !q.steps.isEmpty() && q.power + other - (free ? t.getNetPower() : 0) + q.power >= op.getLife()) {
+                        p = q;
+                        dmg = op.getLife();
+                        ControlBrain.count("leyline_burn_planned");
+                    }
+                }
                 if (dmg < op.getLife()) continue;
                 ControlBrain.count("leyline_main1");
                 planned.clear();
@@ -414,6 +428,139 @@ public class LeylineBrain {
         return out;
     }
 
+    static boolean burnInHand(Player me) {
+        for (Card c : me.getCardsIn(ZoneType.Hand)) if (named(c, SELLSWORD)) return true;
+        return false;
+    }
+
+    /**
+     * Post-filter of Forge's own choice (tweaks leyburn, leyland).
+     * leyburn: never Burn Together (it sacrifices the creature) on our own creature in our main phase 1: the pumped
+     * attacker should attack first (measure leylinec9961-spend-mullS, Slivers game 427: an 8-power Show-Off sacrificed
+     * to kill a 2/1 when attack + Burn Together to the face was lethal).
+     * leyland: when Forge plays a land, play instead the land that lets the most cheap creatures in hand be cast this
+     * turn (v2.3 game 909: Mountain on turn 1 with Elusive Otter in hand and Spirebluff Canal available).
+     */
+    static List<SpellAbility> post(Player me, List<SpellAbility> ai) {
+        if (ai == null || ai.isEmpty() || !deck(me)) return ai;
+        Game g = me.getGame();
+        boolean mine = g.getPhaseHandler().isPlayerTurn(me);
+        PhaseType ph = g.getPhaseHandler().getPhase();
+        if (AiTweaks.TWEAKS.contains("leyburn") && mine && ph == PhaseType.MAIN1)
+            for (SpellAbility sa : ai)
+                if (sa.getHostCard() != null && named(sa.getHostCard(), SELLSWORD) && sa.isAdventure()) {
+                    ControlBrain.count("leyline_burn_veto");
+                    return null;
+                }
+        if (AiTweaks.TWEAKS.contains("leyland") && mine && ai.size() == 1 && ai.get(0).isLandAbility()) {
+            SpellAbility better = betterLand(me, ai.get(0));
+            if (better != null) {
+                ControlBrain.count("leyline_land_swap");
+                return List.of(better);
+            }
+        }
+        return ai;
+    }
+
+    /** Colours a land can add this turn if played now ("" if it enters tapped); C counts as generic. */
+    static String landColours(Player me, Card land, boolean entering) {
+        int lands = (int) me.getCardsIn(ZoneType.Battlefield).stream().filter(Card::isLand).count();
+        boolean islandOrMountain = me.getCardsIn(ZoneType.Battlefield).stream()
+                .anyMatch(c -> c.isLand() && (c.getType().hasSubtype("Island") || c.getType().hasSubtype("Mountain")));
+        switch (land.getName()) {
+            case "Spirebluff Canal": return entering && lands > 2 ? "" : "UR";
+            case "Starting Town": return entering && me.getGame().getPhaseHandler().getTurn() > 6 ? "" : "UR";
+            case "Riverpyre Verge": return islandOrMountain ? "UR" : "R";
+            case "Mountain": return "R";
+            case "Steam Vents": return "UR";            // entering: Forge decides whether to pay 2 life; assume it does
+            case "Multiversal Passage": return entering ? "" : "UR";   // assume tapped when played (may cost 2 life)
+            default: return "C";
+        }
+    }
+
+    /** How many creature cards in hand could be cast this turn with these mana colours (one string per land). */
+    static int castableCreatures(Player me, List<String> pool) {
+        int n = 0;
+        for (Card c : me.getCardsIn(ZoneType.Hand)) {
+            if (!c.isCreature()) continue;
+            int cmc = (int) c.getCMC();
+            if (cmc > pool.size()) continue;
+            String cost = c.getManaCost().getShortString();
+            boolean ok = true;
+            List<String> left = new ArrayList<>(pool);
+            for (char col : new char[]{'U', 'R'}) {
+                long need = cost.chars().filter(x -> x == col).count();
+                for (int i = 0; i < need && ok; i++) {
+                    String src = null;
+                    for (String p : left) if (p.indexOf(col) >= 0 && (src == null || p.length() < src.length())) src = p;
+                    if (src == null) ok = false; else left.remove(src);
+                }
+            }
+            if (ok && cost.indexOf('B') < 0 && cost.indexOf('G') < 0 && cost.indexOf('W') < 0) n++;
+        }
+        return n;
+    }
+
+    static SpellAbility betterLand(Player me, SpellAbility chosen) {
+        List<String> base = new ArrayList<>();
+        for (Card c : me.getCardsIn(ZoneType.Battlefield))
+            if (c.isLand() && c.isUntapped()) base.add(landColours(me, c, false));
+        base.removeIf(String::isEmpty);
+        java.util.function.Function<Card, Integer> value = land -> {
+            List<String> pool = new ArrayList<>(base);
+            String col = landColours(me, land, true);
+            if (!col.isEmpty()) pool.add(col);
+            return castableCreatures(me, pool);
+        };
+        int have = value.apply(chosen.getHostCard());
+        SpellAbility best = null;
+        int bestV = have;
+        CardCollection lands = new CardCollection();
+        for (Card c : me.getCardsIn(ZoneType.Hand)) if (c.isLand()) lands.add(c);
+        for (SpellAbility sa : ComputerUtilAbility.getSpellAbilities(lands, me)) {
+            if (!sa.isLandAbility()) continue;
+            sa.setActivatingPlayer(me);
+            try { if (!sa.canPlay()) continue; } catch (Exception e) { continue; }
+            int v = value.apply(sa.getHostCard());
+            if (v > bestV) { bestV = v; best = sa; }
+        }
+        return best;
+    }
+
+    /** Elusive Otter with POWER: no untapped creature of theirs that could block it has power >= POWER. */
+    static boolean otterFree(Card otter, Player op, long power) {
+        for (Card b : op.getCreaturesInPlay()) {
+            if (b.isTapped()) continue;
+            boolean can;
+            try { can = CombatUtil.canBlock(otter, b); } catch (Exception e) { can = true; }
+            if (can && b.getNetPower() >= power) return false;
+        }
+        return true;
+    }
+
+    /**
+     * Tweak leydig: main 2, a land-less hand and mana to spare: a cantrip pump (Pym Particles, Ancestral Anger, Might of
+     * the Meek) on any creature of ours, to dig for lands and threats (v2.3 game 909: three idle turns on 3 lands holding
+     * two Might of the Meek and an Ancestral Anger).
+     */
+    static SpellAbility dig(Player me, int mana) {
+        for (Card c : me.getCardsIn(ZoneType.Hand)) if (c.isLand()) return null;
+        int reserve = Integer.MAX_VALUE;
+        for (Card c : me.getCardsIn(ZoneType.Hand)) if (c.isCreature()) reserve = Math.min(reserve, (int) c.getCMC());
+        if (reserve == Integer.MAX_VALUE || reserve > mana) reserve = 0;
+        if (mana - reserve <= 0) return null;
+        for (Card t : me.getCreaturesInPlay())
+            for (Step st : pumps(me, t, false)) {
+                if (!(st.name.equals(PYM) || st.name.equals(ANGER) || st.name.equals("Might of the Meek"))) continue;
+                if (st.cost > mana - reserve) continue;
+                ControlBrain.count("leyline_dig");
+                st.sa.resetTargets();
+                st.sa.getTargets().add(t);
+                return st.sa;
+            }
+        return null;
+    }
+
     static final java.util.Set<String> SPEND_MAIN1 = java.util.Set.of(PYM, ANGER, "Wild Ride"),
             SPEND_COMBAT = java.util.Set.of("Turn Inside Out", "Might of the Meek", BULK);
 
@@ -440,8 +587,21 @@ public class LeylineBrain {
             for (Step st : pumps(me, t, ph != PhaseType.MAIN1)) {
                 if (st.cost > surplus) continue;
                 if (ph == PhaseType.MAIN1) {
-                    if (!SPEND_MAIN1.contains(st.name)) continue;
-                    if (st.name.equals(PYM) == free) continue;   // Pym only where it makes the attacker unblockable
+                    boolean otterPump = false;
+                    if (!free && named(t, OTTER) && AiTweaks.TWEAKS.contains("leyotter") && !st.name.equals(PYM)
+                            && (SPEND_MAIN1.contains(st.name) || SPEND_COMBAT.contains(st.name))) {
+                        // Elusive Otter: creatures with less power can't block it, and it has prowess, so the pump
+                        // itself can be the evasion (v2.3 games 33, 909: it waited at home holding pumps)
+                        int apps = 1 + (int) me.getCardsIn(ZoneType.Battlefield).stream().filter(c -> named(c, LEYLINE)).count();
+                        long pw = t.getNetPower() + 1;   // prowess: the cast (Leyline copies are not cast)
+                        pw = st.name.equals(BULK) ? pw * (1L << apps) : pw + (long) add(st.name, me) * apps;
+                        otterPump = otterFree(t, op, pw);
+                        if (otterPump) ControlBrain.count("leyline_otter_pump");
+                    }
+                    if (!otterPump) {
+                        if (!SPEND_MAIN1.contains(st.name)) continue;
+                        if (st.name.equals(PYM) == free) continue;   // Pym only where it makes the attacker unblockable
+                    }
                     if (plannedGame != g || plannedTurn != g.getPhaseHandler().getTurn()) planned.clear();
                     planned.add(t);   // forceAttack: the pumped creature attacks
                     plannedGame = g;
