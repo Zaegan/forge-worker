@@ -333,9 +333,11 @@ function PrepareJob($job) {
 }
 
 # ---- the scheduler: one shared queue across batches; the next batch is fetched before this one runs dry ----
-$queue = New-Object System.Collections.Queue
+# games of different harness/tweaks settings may be queued together: each game goes to a worker of its setting, and
+# workers are switched to another setting one at a time, as each becomes idle (no drain-and-restart of the whole pool)
+$queue = New-Object System.Collections.ArrayList
 $tries = @{}
-$hold = $null; $curKey = $null; $active = 0
+$active = 0
 $uploads = New-Object System.Collections.ArrayList
 $nextFetch = Get-Date; $fetched = 0; $stop = $false
 $nextWithdrawCheck = Get-Date
@@ -353,7 +355,7 @@ function Finish($st, $played) {
 
 while ($true) {
     # fetch the next batch while the current one still has work queued (no idle gap between batches)
-    if (-not $stop -and -not $hold -and $queue.Count -lt $Threads -and (Get-Date) -ge $nextFetch -and -not ($Once -and $fetched -gt 0)) {
+    if (-not $stop -and $queue.Count -lt $Threads -and (Get-Date) -ge $nextFetch -and -not ($Once -and $fetched -gt 0)) {
         $r = $null
         try {
             $r = Invoke-WebRequest -Uri "$Server/api.php?a=job&slots=$Threads&v=$ClientVersion" -Headers $headers -UseBasicParsing -TimeoutSec 120
@@ -378,17 +380,12 @@ while ($true) {
                 $st = PrepareJob $job
                 $active++
                 $st | Add-Member -NotePropertyName Prio -NotePropertyValue ([int]$job.priority)
-                if ($null -eq $curKey -or $st.Key -eq $curKey) {
-                    $curKey = $st.Key
-                    # a higher-priority campaign (an experiment waiting on results) goes in front of bulk work
-                    $behind = @($queue.ToArray() | Where-Object { $_[1].Prio -ge $st.Prio })
-                    $after = @($queue.ToArray() | Where-Object { $_[1].Prio -lt $st.Prio })
-                    $queue.Clear()
-                    foreach ($x in $behind) { $queue.Enqueue($x) }
-                    foreach ($g in $job.games) { $queue.Enqueue(@($g, $st)) }
-                    foreach ($x in $after) { $queue.Enqueue($x) }
-                }
-                else { $hold = $st }
+                # a higher-priority campaign (an experiment waiting on results) goes in front of bulk work
+                $items = @($queue.ToArray())
+                $queue.Clear()
+                foreach ($x in @($items | Where-Object { $_[1].Prio -ge $st.Prio })) { [void]$queue.Add($x) }
+                foreach ($g in $job.games) { [void]$queue.Add(@($g, $st)) }
+                foreach ($x in @($items | Where-Object { $_[1].Prio -lt $st.Prio })) { [void]$queue.Add($x) }
                 if ($Once) { $stop = $true }
             } catch {
                 # e.g. the harness check refused the job, or GitHub was unreachable: play none of it (its lease expires
@@ -404,24 +401,25 @@ while ($true) {
         try {
             $wd = @((Invoke-RestMethod -Uri "$Server/api.php?a=withdrawn" -Headers $headers -UseBasicParsing -TimeoutSec 30).withdrawn)
             if ($wd.Count -gt 0) {
-                $keep = New-Object System.Collections.Queue; $dropped = 0
-                while ($queue.Count -gt 0) {
-                    $item = $queue.Dequeue()
-                    if ($wd -contains $item[1].Job.campaign) { $dropped++; Finish $item[1] $false } else { $keep.Enqueue($item) }
+                $keep = New-Object System.Collections.ArrayList; $dropped = 0
+                foreach ($item in @($queue.ToArray())) {
+                    if ($wd -contains $item[1].Job.campaign) { $dropped++; Finish $item[1] $false } else { [void]$keep.Add($item) }
                 }
                 $queue = $keep
                 if ($dropped) { Log "dropped $dropped queued games of withdrawn campaigns" }
             }
         } catch { }
     }
-    # a batch needing another harness or settings waits until the current workers are idle, then restarts them
-    if ($hold -and $queue.Count -eq 0 -and @($script:pool | Where-Object { $_.Cur }).Count -eq 0) {
-        Log "new harness or settings: restarting the game workers"; StopPool
-        $curKey = $hold.Key; foreach ($g in $hold.Job.games) { $queue.Enqueue(@($g, $hold)) }; $hold = $null
-    }
-    while ($queue.Count -gt 0 -and $script:pool.Count -lt $Threads -and $queue.Count -gt @($script:pool | Where-Object { -not $_.Cur }).Count) {
-        $st0 = $queue.Peek()[1]
-        [void]$script:pool.Add((StartWorker $st0.Classes $st0.Job.tweaks $st0.Key))
+    # per setting: games queued, workers running it
+    $need = @{}; foreach ($x in $queue) { $need[$x[1].Key] = 1 + [int]$need[$x[1].Key] }
+    $have = @{}; foreach ($w in $script:pool) { if (-not $w.Retiring) { $have[$w.Key] = 1 + [int]$have[$w.Key] } }
+    # grow the pool: a worker for the setting of the earliest queued game whose setting has fewer workers than games
+    while ($script:pool.Count -lt $Threads) {
+        $pick = $null
+        foreach ($x in $queue) { if ([int]$have[$x[1].Key] -lt [int]$need[$x[1].Key]) { $pick = $x[1]; break } }
+        if (-not $pick) { break }
+        [void]$script:pool.Add((StartWorker $pick.Classes $pick.Job.tweaks $pick.Key))
+        $have[$pick.Key] = 1 + [int]$have[$pick.Key]
     }
     foreach ($w in @($script:pool)) {
         while ($w.Err.IsCompleted -and $w.Err.Result -ne $null) { $w.Err = $w.P.StandardError.ReadLineAsync() }
@@ -432,7 +430,7 @@ while ($true) {
                 $g = $w.Cur[0]; $st = $w.Cur[1]
                 if ($line.StartsWith("@@FAIL ")) {
                     $tries[$g.gid] = 1 + [int]$tries[$g.gid]
-                    if ($tries[$g.gid] -lt 3) { $queue.Enqueue($w.Cur) } else { Finish $st $false }
+                    if ($tries[$g.gid] -lt 3) { [void]$queue.Add($w.Cur) } else { Finish $st $false }
                 } else { Finish $st $true }
                 $w.Cur = $null
             }
@@ -445,7 +443,7 @@ while ($true) {
                 if (Test-Path (Join-Path $st.Outs "$(SafeName $g.gid).jsonl")) { Finish $st $true }
                 else {
                     $tries[$g.gid] = 1 + [int]$tries[$g.gid]
-                    if ($tries[$g.gid] -lt 3) { $queue.Enqueue($w.Cur) } else { Finish $st $false }
+                    if ($tries[$g.gid] -lt 3) { [void]$queue.Add($w.Cur) } else { Finish $st $false }
                 }
             }
             $w.Cur = $null; $w.Dead = $true
@@ -454,8 +452,17 @@ while ($true) {
             # more workers than the target: retire this idle one (it exits when its input closes)
             $w | Add-Member -NotePropertyName Retiring -NotePropertyValue $true -Force
             try { $w.P.StandardInput.Close() } catch { }
-        } elseif ($w.Ready -and -not $w.Cur -and -not $w.Retiring -and $queue.Count -gt 0 -and $w.Key -eq $queue.Peek()[1].Key) {
-            $item = $queue.Dequeue(); $g = $item[0]; $st = $item[1]
+        } elseif ($w.Ready -and -not $w.Cur -and -not $w.Retiring -and $queue.Count -gt 0 -and [int]$need[$w.Key] -eq 0) {
+            # idle, and nothing queued for its setting while other work waits: retire it; the pool refill starts a
+            # worker for the waiting setting in its place (one worker at a time, never the whole pool)
+            $w | Add-Member -NotePropertyName Retiring -NotePropertyValue $true -Force
+            try { $w.P.StandardInput.Close() } catch { }
+            if (-not $script:saidSwitch) { Log "switching game workers to another setting, one at a time as they finish"; $script:saidSwitch = $true }
+        } elseif ($w.Ready -and -not $w.Cur -and -not $w.Retiring -and [int]$need[$w.Key] -gt 0) {
+            $idx = -1
+            for ($i = 0; $i -lt $queue.Count; $i++) { if ($queue[$i][1].Key -eq $w.Key) { $idx = $i; break } }
+            $item = $queue[$idx]; $queue.RemoveAt($idx); $need[$w.Key] = [int]$need[$w.Key] - 1
+            $g = $item[0]; $st = $item[1]; $script:saidSwitch = $false
             try {
                 $w.P.StandardInput.WriteLine((($g.gid, (Join-Path $st.Decks "$($g.a).dck"), (Join-Path $st.Decks "$($g.b).dck"),
                     $g.seed, $g.index, $g.timeout, (Join-Path $st.Outs "$(SafeName $g.gid).jsonl")) -join "`t"))
@@ -465,7 +472,7 @@ while ($true) {
                 # the game worker ended between the check above and this write ("Broken pipe"): this used to stop the
                 # whole client (2026-10-11 03:39). Put the game back, drop that worker; the pool refill starts a new one.
                 Log "a game worker stopped unexpectedly ($($_.Exception.Message)); starting a new one"
-                $queue.Enqueue($item)
+                [void]$queue.Add($item)
                 try { if (-not $w.P.HasExited) { $w.P.Kill() } } catch { }
                 $w.Cur = $null; $w.Dead = $true
             }

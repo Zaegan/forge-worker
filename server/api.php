@@ -160,7 +160,9 @@ function dwell_filter($db, $worker, $camps, $order, $now) {
         if ($n === $same[0]) break;
         if (setting_of($camps[$n]) === $target) $waiting += $OPEN[$n] ?? 0;
     }
-    $switch_cost = 3 * max(1, $SLOTS);
+    // a v4+ client switches one worker at a time as each finishes (~10 s start-up each, no drain): far cheaper
+    global $CLIENT_V;
+    $switch_cost = ($CLIENT_V >= 4 ? 0.5 : 3) * max(1, $SLOTS);
     if ($waiting >= 10 * $switch_cost) return [$order, true];
     return [array_merge($same, array_values(array_diff($order, $same))), false];
 }
@@ -197,6 +199,7 @@ if ($a === 'job') {
     $db->exec("update games set status='open', job=null, worker=null where status='leased' and lease_until < $now");
     $OPEN = open_counts($db);
     $SLOTS = $slots;
+    $CLIENT_V = intval($_GET['v'] ?? 0);
     [$order, $fresh] = dwell_filter($db, $worker, $camps, order_campaigns($camps, $wts, $OPEN), $now);
     foreach ($order as $name) {
         $meta = $camps[$name];
