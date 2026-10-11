@@ -28,7 +28,7 @@ param(
     [switch]$Update,                        # review and (after you confirm) install the newest worker.ps1; does not start work
     [int]$IdleWait = 20                     # seconds to wait before asking again when the server has no work
 )
-$ClientVersion = 3                          # the server can ask clients older than its minimum to update
+$ClientVersion = 4                          # the server can ask clients older than its minimum to update
 $ErrorActionPreference = "Stop"
 $ProgressPreference = "SilentlyContinue"   # Invoke-WebRequest's progress bar makes downloads very slow on PS 5.1
 [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
@@ -416,10 +416,19 @@ while ($true) {
             try { $w.P.StandardInput.Close() } catch { }
         } elseif ($w.Ready -and -not $w.Cur -and -not $w.Retiring -and $queue.Count -gt 0 -and $w.Key -eq $queue.Peek()[1].Key) {
             $item = $queue.Dequeue(); $g = $item[0]; $st = $item[1]
-            $w.P.StandardInput.WriteLine((($g.gid, (Join-Path $st.Decks "$($g.a).dck"), (Join-Path $st.Decks "$($g.b).dck"),
-                $g.seed, $g.index, $g.timeout, (Join-Path $st.Outs "$(SafeName $g.gid).jsonl")) -join "`t"))
-            $w.P.StandardInput.Flush()
-            $w.Cur = $item
+            try {
+                $w.P.StandardInput.WriteLine((($g.gid, (Join-Path $st.Decks "$($g.a).dck"), (Join-Path $st.Decks "$($g.b).dck"),
+                    $g.seed, $g.index, $g.timeout, (Join-Path $st.Outs "$(SafeName $g.gid).jsonl")) -join "`t"))
+                $w.P.StandardInput.Flush()
+                $w.Cur = $item
+            } catch {
+                # the game worker ended between the check above and this write ("Broken pipe"): this used to stop the
+                # whole client (2026-10-11 03:39). Put the game back, drop that worker; the pool refill starts a new one.
+                Log "a game worker stopped unexpectedly ($($_.Exception.Message)); starting a new one"
+                $queue.Enqueue($item)
+                try { if (-not $w.P.HasExited) { $w.P.Kill() } } catch { }
+                $w.Cur = $null; $w.Dead = $true
+            }
         }
     }
     foreach ($w in @($script:pool | Where-Object { $_.Dead })) { $script:pool.Remove($w) }
