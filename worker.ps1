@@ -28,7 +28,8 @@ param(
     [switch]$Update,                        # review and (after you confirm) install the newest worker.ps1; does not start work
     [int]$IdleWait = 20                     # seconds to wait before asking again when the server has no work
 )
-$ClientVersion = 4                          # the server can ask clients older than its minimum to update
+$Waiting = 2                                # games queued in each game worker beyond the one it is playing
+$ClientVersion = 5                          # the server can ask clients older than its minimum to update
 $ErrorActionPreference = "Stop"
 $ProgressPreference = "SilentlyContinue"   # Invoke-WebRequest's progress bar makes downloads very slow on PS 5.1
 [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
@@ -258,7 +259,7 @@ function StartWorker($classes, $tweaks, $key) {
     $p = [Diagnostics.Process]::Start($psi)
     try { $p.PriorityClass = "BelowNormal" } catch { }
     return [pscustomobject]@{ P = $p; Out = $p.StandardOutput.ReadLineAsync(); Err = $p.StandardError.ReadLineAsync()
-                              Ready = $false; Cur = $null; Key = $key; Dead = $false; Retiring = $false }
+                              Ready = $false; Pend = (New-Object System.Collections.ArrayList); Key = $key; Dead = $false; Retiring = $false }
 }
 
 function StopPool {
@@ -426,55 +427,70 @@ while ($true) {
         while ($w.Out.IsCompleted -and $w.Out.Result -ne $null) {
             $line = $w.Out.Result
             if ($line -eq "@@READY") { $w.Ready = $true }
-            elseif (($line.StartsWith("@@DONE ") -or $line.StartsWith("@@FAIL ")) -and $w.Cur) {
-                $g = $w.Cur[0]; $st = $w.Cur[1]
-                if ($line.StartsWith("@@FAIL ")) {
-                    $tries[$g.gid] = 1 + [int]$tries[$g.gid]
-                    if ($tries[$g.gid] -lt 3) { [void]$queue.Add($w.Cur) } else { Finish $st $false }
-                } else { Finish $st $true }
-                $w.Cur = $null
+            elseif ($line.StartsWith("@@DONE ") -or $line.StartsWith("@@FAIL ")) {
+                # games run in the order written; the report names the game
+                $tag = ($line.Substring(7) -split ' ', 2)[0]
+                $item = $null
+                foreach ($x in $w.Pend) { if ([string]$x[0].gid -eq $tag) { $item = $x; break } }
+                if ($item) {
+                    $w.Pend.Remove($item)
+                    $g = $item[0]; $st = $item[1]
+                    if ($line.StartsWith("@@FAIL ")) {
+                        $tries[$g.gid] = 1 + [int]$tries[$g.gid]
+                        if ($tries[$g.gid] -lt 3) { [void]$queue.Add($item) } else { Finish $st $false }
+                    } else { Finish $st $true }
+                }
             }
             $w.Out = $w.P.StandardOutput.ReadLineAsync()
         }
         if ($w.P.HasExited) {
-            # a timed-out game ends its JVM (by design); a game it never reported goes back on the queue
-            if ($w.Cur) {
-                $g = $w.Cur[0]; $st = $w.Cur[1]
+            # a timed-out game ends its JVM (by design); games it never reported (the one playing and those waiting)
+            # go back on the queue
+            foreach ($item in @($w.Pend)) {
+                $g = $item[0]; $st = $item[1]
                 if (Test-Path (Join-Path $st.Outs "$(SafeName $g.gid).jsonl")) { Finish $st $true }
                 else {
                     $tries[$g.gid] = 1 + [int]$tries[$g.gid]
-                    if ($tries[$g.gid] -lt 3) { [void]$queue.Add($w.Cur) } else { Finish $st $false }
+                    if ($tries[$g.gid] -lt 3) { [void]$queue.Add($item) } else { Finish $st $false }
                 }
             }
-            $w.Cur = $null; $w.Dead = $true
-        } elseif ($w.Ready -and -not $w.Cur -and -not $w.Retiring -and $script:pool.Count -gt $Threads -and
+            $w.Pend.Clear(); $w.Dead = $true
+        } elseif ($w.Ready -and $w.Pend.Count -eq 0 -and -not $w.Retiring -and $script:pool.Count -gt $Threads -and
                   @($script:pool | Where-Object { -not $_.Retiring }).Count -gt $Threads) {
             # more workers than the target: retire this idle one (it exits when its input closes)
             $w | Add-Member -NotePropertyName Retiring -NotePropertyValue $true -Force
             try { $w.P.StandardInput.Close() } catch { }
-        } elseif ($w.Ready -and -not $w.Cur -and -not $w.Retiring -and $queue.Count -gt 0 -and [int]$need[$w.Key] -eq 0) {
+        } elseif ($w.Ready -and $w.Pend.Count -eq 0 -and -not $w.Retiring -and $queue.Count -gt 0 -and [int]$need[$w.Key] -eq 0) {
             # idle, and nothing queued for its setting while other work waits: retire it; the pool refill starts a
             # worker for the waiting setting in its place (one worker at a time, never the whole pool)
             $w | Add-Member -NotePropertyName Retiring -NotePropertyValue $true -Force
             try { $w.P.StandardInput.Close() } catch { }
             if (-not $script:saidSwitch) { Log "switching game workers to another setting, one at a time as they finish"; $script:saidSwitch = $true }
-        } elseif ($w.Ready -and -not $w.Cur -and -not $w.Retiring -and [int]$need[$w.Key] -gt 0) {
-            $idx = -1
-            for ($i = 0; $i -lt $queue.Count; $i++) { if ($queue[$i][1].Key -eq $w.Key) { $idx = $i; break } }
-            $item = $queue[$idx]; $queue.RemoveAt($idx); $need[$w.Key] = [int]$need[$w.Key] - 1
-            $g = $item[0]; $st = $item[1]; $script:saidSwitch = $false
-            try {
-                $w.P.StandardInput.WriteLine((($g.gid, (Join-Path $st.Decks "$($g.a).dck"), (Join-Path $st.Decks "$($g.b).dck"),
-                    $g.seed, $g.index, $g.timeout, (Join-Path $st.Outs "$(SafeName $g.gid).jsonl")) -join "`t"))
-                $w.P.StandardInput.Flush()
-                $w.Cur = $item
-            } catch {
-                # the game worker ended between the check above and this write ("Broken pipe"): this used to stop the
-                # whole client (2026-10-11 03:39). Put the game back, drop that worker; the pool refill starts a new one.
-                Log "a game worker stopped unexpectedly ($($_.Exception.Message)); starting a new one"
-                [void]$queue.Add($item)
-                try { if (-not $w.P.HasExited) { $w.P.Kill() } } catch { }
-                $w.Cur = $null; $w.Dead = $true
+        } elseif ($w.Ready -and -not $w.Retiring) {
+            # keep each worker's own queue topped up: the game playing plus $Waiting more, so it starts the next game
+            # the moment one ends (no dependence on this loop's timing or on an upload starting)
+            while ($w.Pend.Count -lt 1 + $Waiting -and [int]$need[$w.Key] -gt 0) {
+                $idx = -1
+                for ($i = 0; $i -lt $queue.Count; $i++) { if ($queue[$i][1].Key -eq $w.Key) { $idx = $i; break } }
+                if ($idx -lt 0) { break }
+                $item = $queue[$idx]; $queue.RemoveAt($idx); $need[$w.Key] = [int]$need[$w.Key] - 1
+                $g = $item[0]; $st = $item[1]; $script:saidSwitch = $false
+                try {
+                    $w.P.StandardInput.WriteLine((($g.gid, (Join-Path $st.Decks "$($g.a).dck"), (Join-Path $st.Decks "$($g.b).dck"),
+                        $g.seed, $g.index, $g.timeout, (Join-Path $st.Outs "$(SafeName $g.gid).jsonl")) -join "`t"))
+                    $w.P.StandardInput.Flush()
+                    [void]$w.Pend.Add($item)
+                } catch {
+                    # the game worker ended ("Broken pipe"): this used to stop the whole client (2026-10-11 03:39).
+                    # Put its games back, drop it; the pool refill starts a new one.
+                    Log "a game worker stopped unexpectedly ($($_.Exception.Message)); starting a new one"
+                    [void]$queue.Add($item)
+                    foreach ($x in @($w.Pend)) { [void]$queue.Add($x) }
+                    $w.Pend.Clear()
+                    try { if (-not $w.P.HasExited) { $w.P.Kill() } } catch { }
+                    $w.Dead = $true
+                    break
+                }
             }
         }
     }
@@ -499,5 +515,5 @@ while ($true) {
         if ($u.State -ne "Running") { Remove-Job $u -Force; $uploads.Remove($u) }
     }
     if ($stop -and $active -eq 0 -and $uploads.Count -eq 0) { StopPool; break }
-    Start-Sleep -Milliseconds 200
+    Start-Sleep -Milliseconds 1000   # each worker holds its next games itself, so this loop need not be quick
 }
