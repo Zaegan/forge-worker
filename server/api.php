@@ -70,13 +70,11 @@ function campaigns($DATA, $db) {
     return $out;
 }
 
-// The order in which campaigns are offered work. Campaigns with a weight share the workers in proportion to it (a
-// weighted random order, drawn again for every job), so no line of work starves; campaigns without one (priority <= 0:
-// filler) only get work when no weighted campaign has any, highest priority first.
+// The order in which campaigns are offered work: a priority QUEUE (order_campaigns). The highest priority with open
+// games gets the workers; lower priorities only fill what it cannot use. Equal priorities share by weight.
 //   DATA/priorities.json {"<substring of a campaign's meta.run path>": priority}   overrides meta.priority
 //   DATA/weights.json    {"<substring of meta.run>": weight}   the longest matching substring names the campaign's
-//       group (one line of work: its campaigns split the group's weight); without a match, priority > 0 gives
-//       weight priority / 5 for the campaign alone
+//       group (one line of work); otherwise the group is the experiment (experiment_of) with weight 1
 function weights_of($DATA, $camps) {
     $ov = @json_decode(@file_get_contents("$DATA/priorities.json") ?: '{}', true) ?: [];
     $wt = @json_decode(@file_get_contents("$DATA/weights.json") ?: '{}', true) ?: [];
@@ -88,38 +86,51 @@ function weights_of($DATA, $camps) {
         $key = null; $w = 0.0;
         foreach ($wt as $pat => $x)
             if ($run !== '' && str_contains($run, $pat) && ($key === null || strlen($pat) > strlen($key))) { $key = $pat; $w = floatval($x); }
-        if ($key === null && $pr > 0) { $key = "campaign:$n"; $w = $pr / 5.0; }
+        if ($key === null) { $key = experiment_of($m, $n); $w = 1.0; }
         $out[$n] = ['priority' => $pr, 'group' => $key, 'weight' => $w];
     }
     return $out;
 }
 
+// one experiment = one group: its run path without the last component when that names an arm/deck of a measurement
+// (".../leyline-confirm/9962/burn" -> ".../leyline-confirm/9962"), else the campaign itself
+function experiment_of($m, $n) {
+    $run = $m['run'] ?? '';
+    if (preg_match('#^(landm|landmeasure|llanc|leyline-confirm|leyline-ab)/#', $run))
+        return 'exp:' . preg_replace('#^landmeasure/#', 'landm/', dirname($run));
+    if (str_contains($run, 'xc-mono20') || preg_match('#runs/xc-#', $run)) return 'exp:' . $run;
+    return "campaign:$n";
+}
+
 function order_campaigns($camps, $wts, $open) {
-    $groups = [];   // group -> its campaigns with open games
-    $rest = [];
+    // A queue: strictly by priority, so the top experiment gets every worker it can use and finishes first; lower
+    // ones only fill what it leaves (an experiment that queues games a few hundred ahead cannot fill every worker).
+    // Within one priority, groups share by weight (weighted random order, Efraimidis-Spirakis; weights are shares of
+    // GAMES, so divided by per_slot); a group (one experiment, its weights.json pattern) keeps its campaigns together,
+    // in random order so paired arms progress evenly.
+    global $PER_SLOT;
+    $tiers = [];   // priority -> group -> campaigns with open games
     foreach ($camps as $n => $m) {
         if (!empty($m['withdrawn']) || empty($open[$n])) continue;
         $w = $wts[$n];
-        if ($w['weight'] > 0) $groups[$w['group']][] = $n; else $rest[] = $n;
+        $tiers[$w['priority']][$w['group'] ?? "campaign:$n"][] = $n;
     }
-    // weighted random order of the groups (Efraimidis-Spirakis: key u^(1/w), largest first). Weights are shares of
-    // GAMES: a job holds per_slot games per worker slot, so a group is drawn with probability weight / per_slot.
-    global $PER_SLOT;
-    $key = [];
-    foreach ($groups as $g => $ns) {
-        $w = $wts[$ns[0]]['weight'] / max(1, intval($camps[$ns[0]]['per_slot'] ?? $PER_SLOT));
-        $key[$g] = pow(mt_rand(1, mt_getrandmax()) / mt_getrandmax(), 1.0 / $w);
-    }
-    arsort($key);
+    krsort($tiers);
     $order = [];
-    foreach (array_keys($key) as $g) {
-        $ns = $groups[$g];
-        usort($ns, fn($x, $y) => $wts[$y]['priority'] <=> $wts[$x]['priority']);   // within a group: priority
-        array_push($order, ...$ns);
+    foreach ($tiers as $pr => $groups) {
+        $key = [];
+        foreach ($groups as $g => $ns) {
+            $w = max(0.01, $wts[$ns[0]]['weight']) / max(1, intval($camps[$ns[0]]['per_slot'] ?? $PER_SLOT));
+            $key[$g] = pow(mt_rand(1, mt_getrandmax()) / mt_getrandmax(), 1.0 / $w);
+        }
+        arsort($key);
+        foreach (array_keys($key) as $g) {
+            $ns = $groups[$g];
+            shuffle($ns);
+            array_push($order, ...$ns);
+        }
     }
-    $rnd = []; foreach ($rest as $n) $rnd[$n] = mt_rand();
-    usort($rest, fn($x, $y) => ($wts[$y]['priority'] <=> $wts[$x]['priority']) ?: ($rnd[$x] <=> $rnd[$y]));
-    return array_merge($order, $rest);
+    return $order;
 }
 
 // A worker restarts its game workers whenever a job needs another harness or AI settings (meta tweaks), so each
@@ -134,9 +145,13 @@ function dwell_filter($db, $worker, $camps, $order, $now) {
     $st = $db->prepare('select setting, since from worker_setting where worker=?');
     $st->bindValue(1, $worker);
     $row = $st->execute()->fetchArray(SQLITE3_NUM);
-    if ($row && $now - $row[1] < $DWELL) {
-        $same = array_values(array_filter($order, fn($n) => setting_of($camps[$n]) === $row[0]));
-        if ($same) return [$same, false];
+    if ($row && $now - $row[1] < $DWELL && $order) {
+        // keep the machine's setting only among campaigns of the TOP priority that has work: a higher priority always
+        // wins over avoiding a restart
+        global $WTS;
+        $top = $WTS[$order[0]]['priority'];
+        $same = array_values(array_filter($order, fn($n) => $WTS[$n]['priority'] === $top && setting_of($camps[$n]) === $row[0]));
+        if ($same) return [array_merge($same, array_values(array_diff($order, $same))), false];
     }
     return [$order, true];
 }
@@ -167,6 +182,7 @@ if ($a === 'job') {
     $slots = max(1, min(64, intval($_GET['slots'] ?? 1)));
     $camps = campaigns($DATA, $db);
     $wts = weights_of($DATA, $camps);
+    $WTS = $wts;
     $now = microtime(true);
     $db->exec('begin immediate');
     $db->exec("update games set status='open', job=null, worker=null where status='leased' and lease_until < $now");
