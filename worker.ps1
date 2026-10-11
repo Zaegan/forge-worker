@@ -212,7 +212,8 @@ New-Item -ItemType Directory -Force -Path $logs | Out-Null
 # - job folders and logs over a day old (a window closed mid-batch, or an upload that failed five times): their
 #   leases have long expired and the server has handed those games out again;
 # - worker.log over 20 MB becomes worker.old.log (one previous file kept);
-# - compiled harness versions other than the three most recently used (every job touches its version's folder).
+# - compiled harness versions other than the three most recently used (every job touches its version's folder);
+# - the installer downloads once unpacked.
 function Housekeeping {
     $cut = (Get-Date).AddDays(-1); $freed = 0
     foreach ($old in @(Get-ChildItem (Join-Path $Dir "jobs") -Directory -ErrorAction SilentlyContinue | Where-Object { $_.LastWriteTime -lt $cut })) {
@@ -225,6 +226,15 @@ function Housekeeping {
     foreach ($old in @(Get-ChildItem (Join-Path $Dir "harness") -Directory -ErrorAction SilentlyContinue | Sort-Object LastWriteTime -Descending | Select-Object -Skip 3)) {
         $freed += (Get-ChildItem $old.FullName -Recurse -File -ErrorAction SilentlyContinue | Measure-Object Length -Sum).Sum
         Remove-Item $old.FullName -Recurse -Force -ErrorAction SilentlyContinue
+    }
+    # the installer downloads, once unpacked (~500 MB: Forge's .tar.bz2 and the JDK archive)
+    $unpacked = @{ "forge-installer-2.0.15.tar.bz2" = "forge-2.0.15/forge-gui-desktop-2.0.15-jar-with-dependencies.jar";
+                   "jdk21.zip" = "jdk/bin/java.exe"; "jdk21.tar.gz" = "jdk/bin/java" }
+    foreach ($a in $unpacked.Keys) {
+        $arc = Join-Path $Dir $a
+        if ((Test-Path $arc) -and (Test-Path (Join-Path $Dir $unpacked[$a]))) {
+            $freed += (Get-Item $arc).Length; Remove-Item $arc -Force -ErrorAction SilentlyContinue
+        }
     }
     try {
         if ((Test-Path $script:LogFile) -and (Get-Item $script:LogFile).Length -gt 20MB) {
