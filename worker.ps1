@@ -205,6 +205,17 @@ Log "forge-worker: $Threads game workers (at most $Ceiling), home $Dir"
 $script:pool = New-Object System.Collections.ArrayList
 $logs = Join-Path $Dir "logs"
 New-Item -ItemType Directory -Force -Path $logs | Out-Null
+# leftovers of earlier sessions (a window closed mid-batch, or an upload that failed five times) would otherwise stay
+# on this PC forever: their leases have long expired and the server has handed those games out again
+$cut = (Get-Date).AddDays(-1); $freed = 0
+foreach ($old in @(Get-ChildItem (Join-Path $Dir "jobs") -Directory -ErrorAction SilentlyContinue | Where-Object { $_.LastWriteTime -lt $cut })) {
+    $freed += (Get-ChildItem $old.FullName -Recurse -File -ErrorAction SilentlyContinue | Measure-Object Length -Sum).Sum
+    Remove-Item $old.FullName -Recurse -Force -ErrorAction SilentlyContinue
+}
+foreach ($old in @(Get-ChildItem $logs -File -ErrorAction SilentlyContinue | Where-Object { $_.LastWriteTime -lt $cut })) {
+    $freed += $old.Length; Remove-Item $old.FullName -Force -ErrorAction SilentlyContinue
+}
+if ($freed -gt 0) { Log ("removed {0:N0} MB of leftovers from earlier sessions" -f ($freed / 1MB)) }
 
 function StartWorker($classes, $tweaks, $key) {
     $psi = New-Object System.Diagnostics.ProcessStartInfo
