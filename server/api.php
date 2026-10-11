@@ -50,8 +50,13 @@ function campaigns($DATA, $db) {
         if (!is_array($m) || empty($m['harness'])) continue;   // not complete yet
         $out[$name] = $m;
         if (!empty($out[$name]['withdrawn'])) continue;   // withdrawn: nothing more is issued
+        // .registered holds the size of games.jsonl when it was last read (not its time: file times have one-second
+        // resolution, and games appended in the same second as a read were never registered, so an experiment
+        // waited forever for them)
         $mark = "$d/.registered";
-        if (file_exists($mark) && filemtime($mark) >= filemtime($f)) continue;
+        clearstatcache(true, $f);
+        $size = filesize($f);
+        if (file_exists($mark) && trim(@file_get_contents($mark)) === (string)$size) continue;
         $db->exec('begin immediate');
         $st = $db->prepare('insert or ignore into games (campaign, gid) values (?, ?)');
         foreach (file($f, FILE_IGNORE_NEW_LINES | FILE_SKIP_EMPTY_LINES) as $l) {
@@ -60,7 +65,7 @@ function campaigns($DATA, $db) {
             $st->bindValue(1, $name); $st->bindValue(2, $g['gid']); $st->execute(); $st->reset();
         }
         $db->exec('commit');
-        touch($mark);
+        file_put_contents($mark, (string)$size);
     }
     return $out;
 }
