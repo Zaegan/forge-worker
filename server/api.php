@@ -77,12 +77,15 @@ function campaigns($DATA, $db) {
 //       group (one line of work); otherwise the group is the experiment (experiment_of) with weight 1
 function weights_of($DATA, $camps) {
     $ov = @json_decode(@file_get_contents("$DATA/priorities.json") ?: '{}', true) ?: [];
+    // DATA/priorities_auto.json (iterate/line_yield.py): deck lines' priorities from their expected value (base tier
+    // from priorities.json x return factor); applied after, so they win for the lines they name
+    $ov = array_merge($ov, @json_decode(@file_get_contents("$DATA/priorities_auto.json") ?: '{}', true) ?: []);
     $wt = @json_decode(@file_get_contents("$DATA/weights.json") ?: '{}', true) ?: [];
     $out = [];
     foreach ($camps as $n => $m) {
         $run = $m['run'] ?? '';
-        $pr = intval($m['priority'] ?? 0);
-        foreach ($ov as $pat => $p) if ($run !== '' && str_contains($run, $pat)) $pr = intval($p);
+        $pr = floatval($m['priority'] ?? 0);
+        foreach ($ov as $pat => $p) if ($run !== '' && str_contains($run, $pat)) $pr = floatval($p);
         $key = null; $w = 0.0;
         foreach ($wt as $pat => $x)
             if ($run !== '' && str_contains($run, $pat) && ($key === null || strlen($pat) > strlen($key))) { $key = $pat; $w = floatval($x); }
@@ -113,9 +116,9 @@ function order_campaigns($camps, $wts, $open) {
     foreach ($camps as $n => $m) {
         if (!empty($m['withdrawn']) || empty($open[$n])) continue;
         $w = $wts[$n];
-        $tiers[$w['priority']][$w['group'] ?? "campaign:$n"][] = $n;
+        $tiers[(string)$w['priority']][$w['group'] ?? "campaign:$n"][] = $n;
     }
-    krsort($tiers);
+    uksort($tiers, fn($x, $y) => floatval($y) <=> floatval($x));
     $order = [];
     foreach ($tiers as $pr => $groups) {
         $key = [];
