@@ -136,27 +136,33 @@ function order_campaigns($camps, $wts, $open) {
     return $order;
 }
 
-// A worker restarts its game workers whenever a job needs another harness or AI settings (meta tweaks), so each
-// machine keeps one setting for at least $DWELL seconds: while that holds and the setting still has work, it is only
-// offered campaigns with it (in their weighted order). When the time is up the full weighted order decides again,
-// so over time every setting gets its weighted share and a machine restarts at most once per $DWELL.
+// A worker restarts its game workers whenever a job needs another harness or AI settings (meta tweaks): see
+// dwell_filter for how that cost is weighed against the queue order.
 $DWELL = 900;
 function setting_of($m) { return ($m['harness'] ?? '') . '|' . ($m['tweaks'] ?? ''); }
 function dwell_filter($db, $worker, $camps, $order, $now) {
-    global $DWELL;
+    // Switching cost in the assignment: moving a machine to another harness/tweaks setting costs it a drain and a
+    // restart of every game worker (~40 s, about 3 games per worker). The machine follows the queue order across a
+    // setting change only when the work waiting under the new setting is worth at least SWITCH_FACTOR times that;
+    // otherwise it takes the first package in queue order that has its current setting. With no work under its
+    // current setting it switches at once. Same-setting packages cost nothing to move between.
+    global $WTS, $SLOTS, $OPEN;
     $db->exec('create table if not exists worker_setting (worker text primary key, setting text, since real)');
     $st = $db->prepare('select setting, since from worker_setting where worker=?');
     $st->bindValue(1, $worker);
     $row = $st->execute()->fetchArray(SQLITE3_NUM);
-    if ($row && $now - $row[1] < $DWELL && $order) {
-        // keep the machine's setting only among campaigns of the TOP priority that has work: a higher priority always
-        // wins over avoiding a restart
-        global $WTS;
-        $top = $WTS[$order[0]]['priority'];
-        $same = array_values(array_filter($order, fn($n) => $WTS[$n]['priority'] === $top && setting_of($camps[$n]) === $row[0]));
-        if ($same) return [array_merge($same, array_values(array_diff($order, $same))), false];
+    if (!$row || !$order || setting_of($camps[$order[0]]) === $row[0]) return [$order, true];
+    $same = array_values(array_filter($order, fn($n) => setting_of($camps[$n]) === $row[0]));
+    if (!$same) return [$order, true];
+    $target = setting_of($camps[$order[0]]);
+    $waiting = 0;   // games open under the new setting, in packages ahead of the machine's own next one
+    foreach ($order as $n) {
+        if ($n === $same[0]) break;
+        if (setting_of($camps[$n]) === $target) $waiting += $OPEN[$n] ?? 0;
     }
-    return [$order, true];
+    $switch_cost = 3 * max(1, $SLOTS);
+    if ($waiting >= 10 * $switch_cost) return [$order, true];
+    return [array_merge($same, array_values(array_diff($order, $same))), false];
 }
 function remember_setting($db, $worker, $setting, $now, $fresh) {
     $st = $db->prepare('select setting from worker_setting where worker=?');
@@ -189,7 +195,9 @@ if ($a === 'job') {
     $now = microtime(true);
     $db->exec('begin immediate');
     $db->exec("update games set status='open', job=null, worker=null where status='leased' and lease_until < $now");
-    [$order, $fresh] = dwell_filter($db, $worker, $camps, order_campaigns($camps, $wts, open_counts($db)), $now);
+    $OPEN = open_counts($db);
+    $SLOTS = $slots;
+    [$order, $fresh] = dwell_filter($db, $worker, $camps, order_campaigns($camps, $wts, $OPEN), $now);
     foreach ($order as $name) {
         $meta = $camps[$name];
         $meta['priority'] = $wts[$name]['priority'];
