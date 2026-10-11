@@ -272,7 +272,7 @@ public class LeylineBrain {
      * Tweak "leylinemull[A-D]" (the user's rule, 2026-10-10, and variants): each mulligan drops the strictest
      * requirement. A (default): 7 cards -> Leyline of Resonance + a creature + a land; 6 -> a creature + a land;
      * 5 -> a land. B (literal): 7 -> Leyline; 6 -> a creature; 5 -> a land. C: 7 -> Leyline + a land, then as A.
-     * D: as A with two lands. After three mulligans any hand is kept.
+     * D: as A with two lands. After three mulligans any hand is kept. S: the scored optimal strategy (MULL_T below).
      * (measure-leyline-brain: a Leyline in the opening hand was worth +11 to +25 points per matchup.)
      */
     static boolean keepHand(Player me, int mulligans) {
@@ -285,7 +285,15 @@ public class LeylineBrain {
         }
         char v = mullVariant();
         boolean keep;
-        if (mulligans >= 3) keep = true;
+        if (v == 'S') {
+            // Forge bottoms the London mulligan cards (tuck, below) BEFORE asking to keep: the hand may already hold
+            // 7 - mulligans cards; only cards still to bottom are chosen here
+            List<Card> hand = new ArrayList<>(me.getCardsIn(ZoneType.Hand));
+            double bs = bestSub(hand, Math.max(0, hand.size() - Math.max(1, 7 - mulligans)));
+            keep = mulligans >= MULL_T.length || bs >= MULL_T[mulligans];
+            if (keep) ControlBrain.count("leyline_mullS_kept_score_" + bs);
+        }
+        else if (mulligans >= 3) keep = true;
         else switch (v) {
             case 'B':   // literal: one requirement per hand
                 keep = mulligans == 0 ? ley : mulligans == 1 ? body : lands >= 1;
@@ -312,9 +320,75 @@ public class LeylineBrain {
         return j < t.length() && Character.isUpperCase(t.charAt(j)) ? t.charAt(j) : 'A';
     }
 
+    /*
+     * Variant S: the exact optimal strategy for the 10-criteria hand score (goldfish/mull_opt.py, verified end to end by
+     * goldfish/mull_sim.c). After k mulligans keep when the best (7-k)-card sub-hand scores at least MULL_T[k], the
+     * expected final score of continuing; London bottoms keep that best sub-hand.
+     */
+    static final double[] MULL_T = {10.475578553519178, 9.43339652188486, 7.91923995242128, 5.740861813707959,
+            2.9439575698608795, -0.7929538950237297};
+
+    static double handScore(List<Card> h) {
+        int lands = 0, cre = 0, pumps = 0, dual = 0, pas = 0, ver = 0, mtn = 0;
+        boolean ley = false, one = false, show = false, can = false, prot = false;
+        for (Card c : h) {
+            switch (c.getName()) {
+                case "Steam Vents": case "Spirebluff Canal": case "Starting Town": lands++; dual++; break;
+                case "Multiversal Passage": lands++; pas++; break;
+                case "Riverpyre Verge": lands++; ver++; break;
+                case "Mountain": lands++; mtn++; break;
+                case LEYLINE: ley = true; break;
+                case SHOWOFF: cre++; show = true; break;
+                case "Stadium Headliner": case OTTER: cre++; one = true; break;
+                case "Drake Hatcher": cre++; break;
+                case ANGER: case PYM: case "Might of the Meek": pumps++; can = true; break;
+                case "Octopus Form": case "Shore Up": pumps++; prot = true; break;
+                case "Wild Ride": case "Turn Inside Out": case BULK: case SECRET: pumps++; break;
+                default: break;
+            }
+        }
+        double s = 0;
+        s += ley ? 3 : 0;
+        s += lands == 2 || lands == 3 ? 3 : lands == 4 ? 1 : lands == 1 ? 0 : -4;
+        boolean both = dual > 0 || (pas + ver + mtn >= 2 && (pas > 0 || (ver > 0 && mtn > 0)));
+        s += both ? 1.5 : 0;
+        s += one ? 2 : 0;
+        s += show ? 2 : 0;
+        s += cre >= 2 ? 1 : 0;
+        s += Math.min(pumps, 3) - Math.max(0, pumps - 4);
+        s += can ? 1 : 0;
+        s += prot ? 0.5 : 0;
+        s -= cre == 0 ? 2 : 0;
+        return s;
+    }
+
+    /** Best score of a sub-hand after bottoming K cards; also the bottom set (as a bitmask over H) in BEST_MASK. */
+    static int bestMask;
+    static double bestSub(List<Card> h, int k) {
+        double best = -1e9;
+        bestMask = 0;
+        int n = h.size();
+        for (int m = 0; m < (1 << n); m++) {
+            if (Integer.bitCount(m) != k) continue;
+            List<Card> keep = new ArrayList<>();
+            for (int i = 0; i < n; i++) if ((m >> i & 1) == 0) keep.add(h.get(i));
+            double sc = handScore(keep);
+            if (sc > best) { best = sc; bestMask = m; }
+        }
+        return best;
+    }
+
     /** London mulligan bottom: Forge's choice, but never a Leyline of Resonance, nor the last creature or last land. */
     static forge.game.card.CardCollectionView tuck(forge.game.card.CardCollectionView hand,
                                                   forge.game.card.CardCollectionView chosen, int n) {
+        if (mullVariant() == 'S') {   // bottom exactly the cards outside the best-scoring sub-hand
+            List<Card> h = new ArrayList<>(hand);
+            bestSub(h, n);
+            CardCollection out = new CardCollection();
+            for (int i = 0; i < h.size(); i++) if ((bestMask >> i & 1) == 1) out.add(h.get(i));
+            ControlBrain.count("leyline_tuck_scored");
+            return out;
+        }
         CardCollection out = new CardCollection(chosen);
         CardCollection kept = new CardCollection(hand);
         kept.removeAll(out);
