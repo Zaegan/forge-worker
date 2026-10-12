@@ -31,6 +31,8 @@ import java.util.List;
  *
  * leyline — LeylineBrain's lethal pump turn and Burn Together for Izzet Leyline.
  * leylinespend — with leyline: on non-lethal turns, spend surplus mana on damage pumps for evasive/unblocked attackers.
+ * spendmana — when Forge's AI would pass in our main phase 2, cast the most expensive castable creature in hand.
+ * flasheot — at the opponent's end step, cast the most expensive castable flash creature in hand.
  * leyburn / leyotter / leydig / leyland — with leyline, fixes from reading losses (LeylineBrain): no Burn Together on
  * our own creature before combat, and "attack, then Burn Together to the face" counted as lethal; Elusive Otter pumped
  * past every blocker; cantrip pumps cast to dig when stuck; the land drop that lets a cheap creature be cast.
@@ -81,6 +83,10 @@ public class AiTweaks {
 
         @Override
         public List<SpellAbility> chooseSpellAbilityToPlay() {
+            if (TWEAKS.contains("flasheot")) {
+                SpellAbility f = flashAtEndOfTurn(getPlayer());
+                if (f != null) return List.of(f);
+            }
             if (TWEAKS.contains("manahold")) ManaHold.plan(getPlayer());
             if (TWEAKS.contains("spiderham")) {
                 SpellAbility bite = spiderHamBite(getPlayer());
@@ -110,10 +116,12 @@ public class AiTweaks {
                     ControlBrain.count("hall_veto");
                     return null;
                 }
-                return TWEAKS.contains("leyline") ? LeylineBrain.post(getPlayer(), ai) : ai;
+                ai = TWEAKS.contains("leyline") ? LeylineBrain.post(getPlayer(), ai) : ai;
+                return spendIfIdle(getPlayer(), ai);
             }
             List<SpellAbility> ai = super.chooseSpellAbilityToPlay();
-            return TWEAKS.contains("leyline") ? LeylineBrain.post(getPlayer(), ai) : ai;
+            ai = TWEAKS.contains("leyline") ? LeylineBrain.post(getPlayer(), ai) : ai;
+            return spendIfIdle(getPlayer(), ai);
         }
 
         @Override
@@ -167,6 +175,51 @@ public class AiTweaks {
             }
             return super.payCostToPreventEffect(cost, sa, alreadyPaid, allPayers);
         }
+    }
+
+    /**
+     * spendmana (2026-10-11, mono-blue: 9% of turns with Tempest Djinn castable passed with nothing cast): when Forge's
+     * AI would pass in our main phase 2 with the stack empty, cast the most expensive creature spell in hand it can pay
+     * for, so mana is not left unused.
+     */
+    static List<SpellAbility> spendIfIdle(Player me, List<SpellAbility> ai) {
+        if (!TWEAKS.contains("spendmana") || (ai != null && !ai.isEmpty())) return ai;
+        Game g = me.getGame();
+        if (!g.getPhaseHandler().isPlayerTurn(me) || g.getPhaseHandler().getPhase() != PhaseType.MAIN2 || !g.getStack().isEmpty()) return ai;
+        SpellAbility best = bestCreatureSpell(me, false);
+        if (best == null) return ai;
+        ControlBrain.count("spendmana");
+        return List.of(best);
+    }
+
+    /**
+     * flasheot (2026-10-11, mono-blue: Enduring Curiosity cast in only 38% of games where drawn): at the opponent's end
+     * step, with the stack empty, cast the most expensive flash creature in hand we can pay for.
+     */
+    static SpellAbility flashAtEndOfTurn(Player me) {
+        Game g = me.getGame();
+        if (g.getPhaseHandler().isPlayerTurn(me) || g.getPhaseHandler().getPhase() != PhaseType.END_OF_TURN || !g.getStack().isEmpty()) return null;
+        SpellAbility best = bestCreatureSpell(me, true);
+        if (best != null) ControlBrain.count("flasheot");
+        return best;
+    }
+
+    static SpellAbility bestCreatureSpell(Player me, boolean flashOnly) {
+        forge.game.card.CardCollection hand = new forge.game.card.CardCollection();
+        for (Card c : me.getCardsIn(ZoneType.Hand))
+            if (c.isCreature() && (!flashOnly || c.hasKeyword(forge.game.keyword.Keyword.FLASH))) hand.add(c);
+        SpellAbility best = null;
+        for (SpellAbility sa : forge.ai.ComputerUtilAbility.getSpellAbilities(hand, me)) {
+            if (!sa.isSpell() || !sa.getHostCard().isCreature() || sa.isAdventure()) continue;
+            sa.setActivatingPlayer(me);
+            try {
+                if (!sa.canPlay() || !ComputerUtilCost.canPayCost(sa, me, false)) continue;
+            } catch (Exception e) {
+                continue;
+            }
+            if (best == null || sa.getHostCard().getCMC() > best.getHostCard().getCMC()) best = sa;
+        }
+        return best;
     }
 
     static boolean named(Card c, String name) {
