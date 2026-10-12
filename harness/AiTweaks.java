@@ -31,6 +31,9 @@ import java.util.List;
  *
  * leyline — LeylineBrain's lethal pump turn and Burn Together for Izzet Leyline.
  * leylinespend — with leyline: on non-lethal turns, spend surplus mana on damage pumps for evasive/unblocked attackers.
+ * leyplan — with leyline: rules of thumb for getting damage through (LeylineBrain): flier walls, killing a blocker by
+ * pumping after blocks, holding pumps against a thick wall, end-step removal, Burn Together only when worth it.
+ * simhybrid / simfull — the Izzet Leyline player uses Forge's simulation (search) AI, hybrid or full.
  * spendmana — when Forge's AI would pass in our main phase 2, cast the most expensive castable creature in hand.
  * flasheot — at the opponent's end step, cast the most expensive castable flash creature in hand.
  * leyburn / leyotter / leydig / leyland — with leyline, fixes from reading losses (LeylineBrain): no Burn Together on
@@ -81,8 +84,15 @@ public class AiTweaks {
             super(game, p, lp);
         }
 
+        boolean simChecked;
+
         @Override
         public List<SpellAbility> chooseSpellAbilityToPlay() {
+            if (!simChecked) {   // simhybrid / simfull: Forge's search-based AI, for the Izzet Leyline player only
+                simChecked = true;
+                if ((TWEAKS.contains("simhybrid") || TWEAKS.contains("simfull")) && LeylineBrain.deck(getPlayer()))
+                    getAi().setUseSimulation(TWEAKS.contains("simfull") ? forge.ai.AIOption.USE_FULL_SIMULATION : forge.ai.AIOption.USE_HYBRID_SIMULATION);
+            }
             if (TWEAKS.contains("flasheot")) {
                 SpellAbility f = flashAtEndOfTurn(getPlayer());
                 if (f != null) return List.of(f);

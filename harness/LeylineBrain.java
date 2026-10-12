@@ -208,6 +208,11 @@ public class LeylineBrain {
 
     static SpellAbility choose(Player me) {
         Game g = me.getGame();
+        if (PLAN() && !g.getPhaseHandler().isPlayerTurn(me) && g.getPhaseHandler().getPhase() == PhaseType.END_OF_TURN
+                && g.getStack().isEmpty() && deck(me)) {
+            Player o = opponent(me);
+            return o == null ? null : eotRemoval(me, o);
+        }
         if (!g.getPhaseHandler().isPlayerTurn(me) || !g.getStack().isEmpty() || !deck(me)) return null;
         PhaseType ph = g.getPhaseHandler().getPhase();
         Player op = opponent(me);
@@ -256,7 +261,12 @@ public class LeylineBrain {
                 ControlBrain.snapshot(me, b.toString());
                 return next(p, t);
             }
+            if (PLAN()) planAttacks(me, op, mana);
             return AiTweaks.TWEAKS.contains("leylinespend") ? spend(me, op, ph, mana) : null;
+        }
+        if (ph == PhaseType.COMBAT_DECLARE_BLOCKERS && PLAN()) {
+            SpellAbility k = killBlocker(me, op, mana);
+            if (k != null) return k;
         }
         if (ph == PhaseType.COMBAT_DECLARE_BLOCKERS) {
             Combat cb = g.getCombat();
@@ -428,6 +438,166 @@ public class LeylineBrain {
         return out;
     }
 
+    /* ---------------- tweak leyplan (user, 2026-10-12): rules of thumb for getting damage through ----------------
+     * Walls: the opponent's untapped creatures that can block a flier (flying or reach). With at most WALL of them
+     * (1 when the opponent leans on fliers: 40%+ of their creatures seen had flying/reach, or a "have flying" lord),
+     * our fliers attack and a blocker that steps in is killed by pumping just enough after blocks (keeping ours alive
+     * when a toughness pump allows). With more, pumps are held (evasion only: Otter, Pym) unless we are dead next turn.
+     * At the opponent's end step, instant removal takes out a walling blocker. Burn Together only on a walling blocker
+     * or for lethal; Forge's own pump choices are vetoed (our plans spend pumps). */
+    static boolean PLAN() { return AiTweaks.TWEAKS.contains("leyplan"); }
+
+    static final java.util.Map<Integer, Boolean> seenOpp = new java.util.HashMap<>();   // opponent creature id -> flier
+    static Game seenGame;
+
+    static boolean flierOrReach(Card c) {
+        return c.hasKeyword(forge.game.keyword.Keyword.FLYING) || c.hasKeyword(forge.game.keyword.Keyword.REACH);
+    }
+
+    /** The opponent leans on fliers: 40%+ of the creatures seen so far had flying/reach, or one grants flying. */
+    static boolean flierHeavy(Player op) {
+        Game g = op.getGame();
+        if (seenGame != g) { seenOpp.clear(); seenGame = g; }
+        boolean lord = false;
+        for (Card c : op.getCreaturesInPlay()) {
+            seenOpp.put(c.getId(), flierOrReach(c));
+            String t = c.getOracleText() == null ? "" : c.getOracleText().toLowerCase();
+            if (t.contains("have flying") || t.contains("gain flying")) lord = true;
+        }
+        long f = seenOpp.values().stream().filter(x -> x).count();
+        return lord || (seenOpp.size() >= 3 && f * 10 >= seenOpp.size() * 4);
+    }
+
+    static List<Card> walls(Player op) {
+        List<Card> out = new ArrayList<>();
+        for (Card c : op.getCreaturesInPlay()) if (c.isUntapped() && flierOrReach(c)) out.add(c);
+        return out;
+    }
+
+    /** Next turn the opponent's creatures could kill us. */
+    static boolean dyingSoon(Player me, Player op) {
+        long p = 0;
+        for (Card c : op.getCreaturesInPlay()) p += Math.max(0, c.getNetPower());
+        return p >= me.getLife();
+    }
+
+    /** Power one instant adds to TARGET (with Leyline copies, Show-Off and prowess triggers); 0 if it adds none. */
+    static long instantGain(Player me, Card target, String name) {
+        int apps = 1 + (int) me.getCardsIn(ZoneType.Battlefield).stream().filter(c -> named(c, LEYLINE)).count();
+        long trig = (named(target, SHOWOFF) ? 2 : 0) + (target.hasKeyword(forge.game.keyword.Keyword.PROWESS) ? 1 : 0);
+        if (name.equals(BULK)) return target.getNetPower() * ((1L << apps) - 1) + trig;
+        return (long) add(name, me) * apps + trig;
+    }
+
+    /** Main 1: make fliers attack when the wall is thin enough and our instants can beat a blocker that steps in. */
+    static void planAttacks(Player me, Player op, int mana) {
+        Game g = me.getGame();
+        List<Card> w = walls(op);
+        int wall = flierHeavy(op) ? 1 : 2;
+        if (w.size() > wall && !dyingSoon(me, op)) { ControlBrain.count("leyplan_hold"); return; }
+        long need = 0;
+        for (Card b : w) need = Math.max(need, b.getNetToughness());
+        for (Card a : me.getCreaturesInPlay()) {
+            if (!canAttackNow(a) || !a.hasKeyword(forge.game.keyword.Keyword.FLYING)) continue;
+            long pw = a.getNetPower();
+            int left = mana;
+            for (Step st : pumps(me, a, true)) {
+                if (pw >= need || st.cost > left) continue;
+                pw += instantGain(me, a, st.name); left -= st.cost;
+            }
+            if (w.isEmpty() || pw >= need || a.hasKeyword(forge.game.keyword.Keyword.DEATHTOUCH)) {
+                if (plannedGame != g || plannedTurn != g.getPhaseHandler().getTurn()) planned.clear();
+                planned.add(a); plannedGame = g; plannedTurn = g.getPhaseHandler().getTurn();
+                ControlBrain.count("leyplan_attack");
+            }
+        }
+    }
+
+    /** After blocks: pump a blocked attacker of ours just enough to kill a walling blocker (keep ours alive if we can). */
+    static SpellAbility killBlocker(Player me, Player op, int mana) {
+        Combat cb = me.getGame().getCombat();
+        if (cb == null) return null;
+        for (Card a : cb.getAttackers()) {
+            if (a.getController() != me || !cb.isBlocked(a)) continue;
+            List<Card> bs = cb.getBlockers(a);
+            if (bs.size() != 1) continue;
+            Card b = bs.get(0);
+            if (!flierOrReach(b) && !named(a, OTTER)) continue;   // only blockers that stop our evasive plan
+            boolean kills = a.hasKeyword(forge.game.keyword.Keyword.DEATHTOUCH) || a.getNetPower() >= b.getNetToughness();
+            boolean dies = !b.hasKeyword(forge.game.keyword.Keyword.DEATHTOUCH) ? b.getNetPower() >= a.getNetToughness() : true;
+            List<Step> avail = pumps(me, a, true);
+            if (!kills) {
+                long need = b.getNetToughness() - a.getNetPower();
+                Step best = null;   // the cheapest single instant that is enough, else the biggest one
+                for (Step st : avail) {
+                    if (st.cost > mana) continue;
+                    long gain = instantGain(me, a, st.name);
+                    if (gain <= 0) continue;
+                    if (best == null || (gain >= need && (instantGain(me, a, best.name) < need || st.cost < best.cost))
+                            || (instantGain(me, a, best.name) < need && gain > instantGain(me, a, best.name))) best = st;
+                }
+                if (best == null) continue;
+                ControlBrain.count("leyplan_kill_blocker");
+                best.sa.resetTargets(); best.sa.getTargets().add(a);
+                return best.sa;
+            }
+            if (dies && !b.hasKeyword(forge.game.keyword.Keyword.DEATHTOUCH))   // already kills: save ours if cheap
+                for (Step st : avail)
+                    if ((st.name.equals("Octopus Form") || st.name.equals("Shore Up")) && st.cost <= mana
+                            && b.getNetPower() < a.getNetToughness() + 1) {
+                        ControlBrain.count("leyplan_save_attacker");
+                        st.sa.resetTargets(); st.sa.getTargets().add(a);
+                        return st.sa;
+                    }
+        }
+        return null;
+    }
+
+    /** Opponent's end step: instant damage on a walling blocker it kills (so next turn's fliers get through). */
+    static SpellAbility eotRemoval(Player me, Player op) {
+        List<Card> w = walls(op);
+        if (w.isEmpty()) return null;
+        w.sort((x, y) -> Integer.compare(y.getNetPower(), x.getNetPower()));
+        CardCollection hand = new CardCollection();
+        for (Card c : me.getCardsIn(ZoneType.Hand)) if (c.isInstant()) hand.add(c);
+        for (SpellAbility sa : ComputerUtilAbility.getSpellAbilities(hand, me)) {
+            if (!sa.isSpell() || sa.getApi() != forge.game.ability.ApiType.DealDamage || !sa.usesTargeting()) continue;
+            sa.setActivatingPlayer(me);
+            try {
+                if (!sa.canPlay() || !ComputerUtilCost.canPayCost(sa, me, false)) continue;
+            } catch (Exception e) {
+                continue;
+            }
+            int dmg;
+            try {
+                dmg = forge.game.ability.AbilityUtils.calculateAmount(sa.getHostCard(), sa.getParam("NumDmg"), sa);
+            } catch (Exception e) {
+                continue;
+            }
+            for (Card b : w)
+                if (sa.canTarget(b) && dmg >= b.getNetToughness()) {
+                    ControlBrain.count("leyplan_eot_removal");
+                    sa.resetTargets(); sa.getTargets().add(b);
+                    return sa;
+                }
+        }
+        return null;
+    }
+
+    /** Forge chose Burn Together: allow it only on a walling blocker, or for lethal damage to the opponent. */
+    static boolean burnWorthIt(Player me, SpellAbility sa) {
+        SpellAbility dmg = sa.getSubAbility();
+        if (dmg == null || dmg.getTargets() == null) return false;
+        Player op = opponent(me);
+        long pw = 0;
+        for (Card t : sa.getTargets().getTargetCards()) pw = Math.max(pw, t.getNetPower());
+        for (Object t : dmg.getTargets()) {
+            if (t instanceof Player && t == op) return pw >= op.getLife();
+            if (t instanceof Card && flierOrReach((Card) t)) return true;
+        }
+        return false;
+    }
+
     static boolean burnInHand(Player me) {
         for (Card c : me.getCardsIn(ZoneType.Hand)) if (named(c, SELLSWORD)) return true;
         return false;
@@ -446,6 +616,21 @@ public class LeylineBrain {
         Game g = me.getGame();
         boolean mine = g.getPhaseHandler().isPlayerTurn(me);
         PhaseType ph = g.getPhaseHandler().getPhase();
+        if (PLAN() && mine)
+            for (SpellAbility sa : ai) {
+                Card h = sa.getHostCard();
+                if (h == null || h.getController() != me) continue;
+                if (named(h, SELLSWORD) && sa.isAdventure() && !burnWorthIt(me, sa)) {
+                    ControlBrain.count("leyplan_burn_veto");
+                    return null;
+                }
+                // pumps are this deck's damage: only our own plans spend them (lethal, evasive attackers, killing a
+                // blocker, digging), never Forge's generic pump logic (game 429: Show-Off pumped twice, no attack)
+                if (pump(h.getName()) && !named(h, SECRET)) {
+                    ControlBrain.count("leyplan_pump_veto");
+                    return null;
+                }
+            }
         if (AiTweaks.TWEAKS.contains("leyburn") && mine && ph == PhaseType.MAIN1)
             for (SpellAbility sa : ai)
                 if (sa.getHostCard() != null && named(sa.getHostCard(), SELLSWORD) && sa.isAdventure()) {
