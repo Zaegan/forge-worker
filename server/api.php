@@ -39,7 +39,8 @@ $db = new SQLite3("$DATA/state.sqlite");
 $db->busyTimeout(20000);
 $db->exec("create table if not exists games (campaign text, gid text, status text default 'open', job text, worker text,
   lease_until real, done_at real, primary key (campaign, gid));
-create table if not exists jobs (job text primary key, campaign text, worker text, created real, n integer, done real);");
+create table if not exists jobs (job text primary key, campaign text, worker text, created real, n integer, done real);
+create table if not exists worker_client (worker text primary key, version integer, seen real, threads integer);");
 
 function campaigns($DATA, $db) {
     $out = [];
@@ -219,9 +220,13 @@ if ($a === 'job') {
             $up->bindValue(1, $job); $up->bindValue(2, $worker); $up->bindValue(3, $now + $lease);
             $up->bindValue(4, $name); $up->bindValue(5, $g); $up->execute(); $up->reset();
         }
-        $ins = $db->prepare('insert into jobs values (?, ?, ?, ?, ?, null)');
+        $ins = $db->prepare('insert into jobs (job, campaign, worker, created, n, done) values (?, ?, ?, ?, ?, null)');
         $ins->bindValue(1, $job); $ins->bindValue(2, $name); $ins->bindValue(3, $worker);
         $ins->bindValue(4, $now); $ins->bindValue(5, count($gids)); $ins->execute();
+        // which client version asked (the version each machine runs)
+        $cv = $db->prepare('insert or replace into worker_client (worker, version, seen, threads) values (?, ?, ?, ?)');
+        $cv->bindValue(1, $worker); $cv->bindValue(2, intval($_GET['v'] ?? 0)); $cv->bindValue(3, $now); $cv->bindValue(4, $slots);
+        $cv->execute();
         remember_setting($db, $worker, setting_of($meta), $now, $fresh);
         $db->exec('commit');
         $want = array_flip($gids);
@@ -331,6 +336,9 @@ if ($a === 'status') {
     $j = [];
     $r = $db->query("select job, worker, campaign, n, created, done from jobs order by created desc limit 20");
     while ($row = $r->fetchArray(SQLITE3_ASSOC)) $j[] = $row;
-    out(200, ['campaigns' => $c, 'workers' => $w, 'recent_jobs' => $j]);
+    $v = [];
+    $r = $db->query("select worker, version, seen, threads from worker_client");
+    while ($row = $r->fetchArray(SQLITE3_ASSOC)) $v[$row['worker']] = $row;
+    out(200, ['campaigns' => $c, 'workers' => $w, 'clients' => $v, 'recent_jobs' => $j]);
 }
 out(404, ['error' => 'not found']);
