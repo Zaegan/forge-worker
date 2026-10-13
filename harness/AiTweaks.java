@@ -36,6 +36,8 @@ import java.util.List;
  * simhybrid / simfull — the Izzet Leyline player uses Forge's simulation (search) AI, hybrid or full.
  * spendmana — when Forge's AI would pass in our main phase 2, cast the most expensive castable creature in hand.
  * flasheot — at the opponent's end step, cast the most expensive castable flash creature in hand.
+ * Scoping (2026-10-13): spendmana, flasheot, prowesspre, equipidle and lordtarget may be written "rule@NAME" to act --
+ *   and run their checks -- only for the player whose deck name contains NAME (see on()).
  * prowesspre — in our main 1, with an untapped prowess creature able to attack, cast cheap untargeted spells first.
  * reckless=NAME — the player whose deck name contains NAME uses Forge's Reckless AI profile (aggressive attacks).
  * dwarvesetb — Boros Dwarves: cast Thorin, Mountain-king and Chainsaw before combat (their enter-the-battlefield
@@ -68,6 +70,36 @@ import java.util.List;
  */
 public class AiTweaks {
     static final String TWEAKS = System.getProperty("forge.sim.tweaks", "");
+
+    /**
+     * Whether general rule RULE (spendmana, flasheot, prowesspre, equipidle, lordtarget) is on for player P (user,
+     * 2026-10-13: no change to how the field decks play unless confirmed; even a rule's checks can change a game).
+     * "rule" alone: every player (as before). "rule@NAME": only a player whose deck name contains NAME -- the checks
+     * never run for anyone else. Tokens are matched exactly, not as substrings.
+     */
+    static boolean on(String rule, Player p) {
+        for (String t : TWEAKS.split(",")) {
+            t = t.trim();
+            if (t.equals(rule)) return true;
+            if (t.startsWith(rule + "@")) {
+                String deck = deckName(p);
+                if (deck != null && deck.contains(t.substring(rule.length() + 1))) return true;
+            }
+        }
+        return false;
+    }
+
+    static final java.util.Map<Player, String> DECK_NAME = new java.util.WeakHashMap<>();
+
+    static String deckName(Player p) {
+        return DECK_NAME.computeIfAbsent(p, q -> {
+            try {
+                return q.getRegisteredPlayer().getDeck().getName();
+            } catch (Exception e) {
+                return null;
+            }
+        });
+    }
     static int bites; // Fateful Bites the tweak chose this game (reset by MatchGames)
 
     static LobbyPlayer player(String name, int index) {
@@ -123,7 +155,7 @@ public class AiTweaks {
                 if ((TWEAKS.contains("simhybrid") || TWEAKS.contains("simfull")) && LeylineBrain.deck(getPlayer()))
                     getAi().setUseSimulation(TWEAKS.contains("simfull") ? forge.ai.AIOption.USE_FULL_SIMULATION : forge.ai.AIOption.USE_HYBRID_SIMULATION);
             }
-            if (TWEAKS.contains("flasheot")) {
+            if (on("flasheot", getPlayer())) {
                 SpellAbility f = flashAtEndOfTurn(getPlayer());
                 if (f != null) return List.of(f);
             }
@@ -136,7 +168,7 @@ public class AiTweaks {
                 SpellAbility pw = ProwessBrain.choose(getPlayer());
                 if (pw != null) return List.of(pw);
             }
-            if (TWEAKS.contains("prowesspre")) {
+            if (on("prowesspre", getPlayer())) {
                 SpellAbility pp = prowessPrecombat(getPlayer());
                 if (pp != null) return List.of(pp);
             }
@@ -176,7 +208,7 @@ public class AiTweaks {
             List<SpellAbility> ai = super.chooseSpellAbilityToPlay();
             ai = TWEAKS.contains("leyline") ? LeylineBrain.post(getPlayer(), ai) : ai;
             ai = TWEAKS.contains("prowessplan") ? ProwessBrain.post(getPlayer(), ai) : ai;
-            if (TWEAKS.contains("lordtarget") && ai != null) for (SpellAbility x : ai) lordRetarget(getPlayer(), x);
+            if (on("lordtarget", getPlayer()) && ai != null) for (SpellAbility x : ai) lordRetarget(getPlayer(), x);
             if (TWEAKS.contains("dwarvesetb2") && ai != null && holdThorin(getPlayer())
                     && ai.stream().anyMatch(x -> x.getHostCard() != null && x.getHostCard().getName().equals("Thorin, Mountain-king"))) {
                 ControlBrain.count("dwarvesetb2_hold");
@@ -192,7 +224,7 @@ public class AiTweaks {
                 if (r != null) return r;
             }
             boolean play = super.playTrigger(host, wa, isMandatory);
-            if (play && TWEAKS.contains("lordtarget")) lordRetarget(getPlayer(), wa);
+            if (play && on("lordtarget", getPlayer())) lordRetarget(getPlayer(), wa);
             return play;
         }
 
@@ -248,11 +280,11 @@ public class AiTweaks {
      * for, so mana is not left unused.
      */
     static List<SpellAbility> spendIfIdle(Player me, List<SpellAbility> ai) {
-        if (TWEAKS.contains("equipidle") && (ai == null || ai.isEmpty())) {
+        if (on("equipidle", me) && (ai == null || ai.isEmpty())) {
             SpellAbility e = equipIdle(me);
             if (e != null) return List.of(e);
         }
-        if (!TWEAKS.contains("spendmana") || (ai != null && !ai.isEmpty())) return ai;
+        if (!on("spendmana", me) || (ai != null && !ai.isEmpty())) return ai;
         Game g = me.getGame();
         if (!g.getPhaseHandler().isPlayerTurn(me) || g.getPhaseHandler().getPhase() != PhaseType.MAIN2 || !g.getStack().isEmpty()) return ai;
         SpellAbility best = bestCreatureSpell(me, false);
