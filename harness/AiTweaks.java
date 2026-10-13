@@ -69,7 +69,20 @@ import java.util.List;
  * -Dforge.sim.tweaks=spiderham,control,protect
  */
 public class AiTweaks {
-    static final String TWEAKS = System.getProperty("forge.sim.tweaks", "");
+    /**
+     * The field decks' own AI is on whenever "control" (4c Control's) is: Boros Dwarves joined the field on 2026-10-13
+     * with its rules (Reckless profile, equipidle, adaptive Thorin), each scoped to the deck named *Dwarves*, so they
+     * act for nothing else. Running deck lines started with "spiderham,control,protect" pick these up too.
+     */
+    static final String FIELD_RULES = "reckless=Dwarves,equipidle@Dwarves,dwarvesetb2@Dwarves";
+    static final String TWEAKS = withField(System.getProperty("forge.sim.tweaks", ""));
+
+    static String withField(String t) {
+        if (!java.util.Arrays.asList(t.split(",")).contains("control")) return t;
+        StringBuilder b = new StringBuilder(t);
+        for (String r : FIELD_RULES.split(",")) if (!java.util.Arrays.asList(t.split(",")).contains(r)) b.append(",").append(r);
+        return b.toString();
+    }
 
     /**
      * Whether general rule RULE (spendmana, flasheot, prowesspre, equipidle, lordtarget) is on for player P (user,
@@ -159,8 +172,8 @@ public class AiTweaks {
                 SpellAbility f = flashAtEndOfTurn(getPlayer());
                 if (f != null) return List.of(f);
             }
-            if (TWEAKS.contains("dwarvesetb2")) removalWatch(getPlayer());
-            if (TWEAKS.contains("dwarvesetb")) {
+            if (on("dwarvesetb2", getPlayer())) removalWatch(getPlayer());
+            if (on("dwarvesetb", getPlayer()) || on("dwarvesetb2", getPlayer())) {
                 SpellAbility d = dwarvesEtb(getPlayer());
                 if (d != null) return List.of(d);
             }
@@ -209,7 +222,7 @@ public class AiTweaks {
             ai = TWEAKS.contains("leyline") ? LeylineBrain.post(getPlayer(), ai) : ai;
             ai = TWEAKS.contains("prowessplan") ? ProwessBrain.post(getPlayer(), ai) : ai;
             if (on("lordtarget", getPlayer()) && ai != null) for (SpellAbility x : ai) lordRetarget(getPlayer(), x);
-            if (TWEAKS.contains("dwarvesetb2") && ai != null && holdThorin(getPlayer())
+            if (on("dwarvesetb2", getPlayer()) && ai != null && holdThorin(getPlayer())
                     && ai.stream().anyMatch(x -> x.getHostCard() != null && x.getHostCard().getName().equals("Thorin, Mountain-king"))) {
                 ControlBrain.count("dwarvesetb2_hold");
                 return null;
@@ -398,7 +411,7 @@ public class AiTweaks {
         boolean equipment = me.getCardsIn(ZoneType.Battlefield).stream().anyMatch(Card::isEquipment);
         boolean target = op != null && !op.getCreaturesInPlay().isEmpty();
         forge.game.card.CardCollection hand = new forge.game.card.CardCollection();
-        boolean thorinOk = equipment && !(TWEAKS.contains("dwarvesetb2") && holdThorin(me));
+        boolean thorinOk = equipment && !(on("dwarvesetb2", me) && holdThorin(me));
         for (Card c : me.getCardsIn(ZoneType.Hand))
             if ((c.getName().equals("Thorin, Mountain-king") && thorinOk) || (c.getName().equals("Chainsaw") && target)) hand.add(c);
         for (SpellAbility sa : forge.ai.ComputerUtilAbility.getSpellAbilities(hand, me)) {
