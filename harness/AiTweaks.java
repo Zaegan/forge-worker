@@ -38,6 +38,10 @@ import java.util.List;
  * flasheot — at the opponent's end step, cast the most expensive castable flash creature in hand.
  * prowesspre — in our main 1, with an untapped prowess creature able to attack, cast cheap untargeted spells first.
  * reckless=NAME — the player whose deck name contains NAME uses Forge's Reckless AI profile (aggressive attacks).
+ * dwarvesetb — Boros Dwarves: cast Thorin, Mountain-king and Chainsaw before combat (their enter-the-battlefield
+ *   attach/damage then shapes this turn's combat).
+ * lordtarget — when our damage spell or trigger targets an opponent's creature, retarget it to a "lord" (a creature
+ *   whose continuous ability affects other creatures, e.g. Galerider Sliver) the damage kills, unless already a lord.
  * equipidle — when Forge would pass in our main phase, equip unattached equipment we can pay for (haste givers on a
  *   creature that can't attack yet, others on our best attacker; after combat, on any creature).
  * prowessplan — Izzet Prowess (ProwessBrain): each turn "can we win this turn?" (lethal search over cheap spells, burn
@@ -121,6 +125,10 @@ public class AiTweaks {
                 SpellAbility f = flashAtEndOfTurn(getPlayer());
                 if (f != null) return List.of(f);
             }
+            if (TWEAKS.contains("dwarvesetb")) {
+                SpellAbility d = dwarvesEtb(getPlayer());
+                if (d != null) return List.of(d);
+            }
             if (TWEAKS.contains("prowessplan")) {
                 SpellAbility pw = ProwessBrain.choose(getPlayer());
                 if (pw != null) return List.of(pw);
@@ -165,6 +173,7 @@ public class AiTweaks {
             List<SpellAbility> ai = super.chooseSpellAbilityToPlay();
             ai = TWEAKS.contains("leyline") ? LeylineBrain.post(getPlayer(), ai) : ai;
             ai = TWEAKS.contains("prowessplan") ? ProwessBrain.post(getPlayer(), ai) : ai;
+            if (TWEAKS.contains("lordtarget") && ai != null) for (SpellAbility x : ai) lordRetarget(getPlayer(), x);
             return spendIfIdle(getPlayer(), ai);
         }
 
@@ -174,7 +183,9 @@ public class AiTweaks {
                 Boolean r = LandfallBrain.playTrigger(getPlayer(), wa);
                 if (r != null) return r;
             }
-            return super.playTrigger(host, wa, isMandatory);
+            boolean play = super.playTrigger(host, wa, isMandatory);
+            if (play && TWEAKS.contains("lordtarget")) lordRetarget(getPlayer(), wa);
+            return play;
         }
 
         @Override
@@ -333,6 +344,72 @@ public class AiTweaks {
             }
         }
         return null;
+    }
+
+    static final java.util.Set<String> DWARVES_ETB = java.util.Set.of("Thorin, Mountain-king", "Chainsaw");
+
+    /** dwarvesetb (2026-10-13, Boros Dwarves vs Slivers: Thorin cast after combat, his damage spent on a non-lord):
+     *  in our main phase 1, cast Thorin (when we have an equipment) or Chainsaw (when the opponent has a creature). */
+    static SpellAbility dwarvesEtb(Player me) {
+        Game g = me.getGame();
+        if (!g.getPhaseHandler().isPlayerTurn(me) || g.getPhaseHandler().getPhase() != PhaseType.MAIN1 || !g.getStack().isEmpty()) return null;
+        Player op = null;
+        for (Player p : g.getPlayers()) if (p != me) op = p;
+        boolean equipment = me.getCardsIn(ZoneType.Battlefield).stream().anyMatch(Card::isEquipment);
+        boolean target = op != null && !op.getCreaturesInPlay().isEmpty();
+        forge.game.card.CardCollection hand = new forge.game.card.CardCollection();
+        for (Card c : me.getCardsIn(ZoneType.Hand))
+            if ((c.getName().equals("Thorin, Mountain-king") && equipment) || (c.getName().equals("Chainsaw") && target)) hand.add(c);
+        for (SpellAbility sa : forge.ai.ComputerUtilAbility.getSpellAbilities(hand, me)) {
+            if (!sa.isSpell()) continue;
+            sa.setActivatingPlayer(me);
+            try {
+                if (sa.canPlay() && ComputerUtilCost.canPayCost(sa, me, false)) {
+                    ControlBrain.count("dwarvesetb_" + (sa.getHostCard().getName().startsWith("Thorin") ? "thorin" : "chainsaw"));
+                    return sa;
+                }
+            } catch (Exception e) {
+                continue;
+            }
+        }
+        return null;
+    }
+
+    /** a creature whose continuous ability affects other creatures (a "lord": Galerider Sliver, Predatory Sliver...) */
+    static boolean isLord(Card c) {
+        for (forge.game.staticability.StaticAbility st : c.getStaticAbilities()) {
+            String mode = st.getParam("Mode"), aff = st.getParam("Affected");
+            if (!"Continuous".equals(mode) || aff == null || !aff.contains("Creature")) continue;
+            if (aff.contains("Self") || aff.contains("Equipped") || aff.contains("Enchanted") || aff.contains("Attached")) continue;
+            return true;
+        }
+        return false;
+    }
+
+    /** lordtarget (2026-10-13): our damage aimed at one opponent creature goes to a lord it kills instead */
+    static void lordRetarget(Player me, SpellAbility sa) {
+        for (SpellAbility x = sa; x != null; x = x.getSubAbility()) {
+            if (x.getApi() != forge.game.ability.ApiType.DealDamage || !x.usesTargeting() || x.getTargets() == null) continue;
+            List<Card> tc = new java.util.ArrayList<>(x.getTargets().getTargetCards());
+            if (tc.size() != 1 || x.getTargets().size() != 1) continue;
+            Card chosen = tc.get(0);
+            if (chosen.getController() == me || !chosen.isCreature() || isLord(chosen)) continue;
+            int dmg;
+            try {
+                dmg = forge.game.ability.AbilityUtils.calculateAmount(x.getHostCard(), x.getParam("NumDmg"), x);
+            } catch (Exception e) {
+                dmg = chosen.getNetToughness() - chosen.getDamage();   // what Forge's own choice needed
+            }
+            Card best = null;
+            for (Card c : chosen.getController().getCreaturesInPlay()) {
+                if (!isLord(c) || c.getNetToughness() - c.getDamage() > dmg || !x.canTarget(c)) continue;
+                if (best == null || c.getNetPower() > best.getNetPower()) best = c;
+            }
+            if (best == null) continue;
+            x.resetTargets();
+            x.getTargets().add(best);
+            ControlBrain.count("lordtarget");
+        }
     }
 
     static SpellAbility bestCreatureSpell(Player me, boolean flashOnly) {
