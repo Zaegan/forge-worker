@@ -36,6 +36,7 @@ import java.util.List;
  * simhybrid / simfull — the Izzet Leyline player uses Forge's simulation (search) AI, hybrid or full.
  * spendmana — when Forge's AI would pass in our main phase 2, cast the most expensive castable creature in hand.
  * flasheot — at the opponent's end step, cast the most expensive castable flash creature in hand.
+ * prowesspre — in our main 1, with an untapped prowess creature able to attack, cast cheap untargeted spells first.
  * leyburn / leyotter / leydig / leyland — with leyline, fixes from reading losses (LeylineBrain): no Burn Together on
  * our own creature before combat, and "attack, then Burn Together to the face" counted as lethal; Elusive Otter pumped
  * past every blocker; cantrip pumps cast to dig when stuck; the land drop that lets a cheap creature be cast.
@@ -96,6 +97,10 @@ public class AiTweaks {
             if (TWEAKS.contains("flasheot")) {
                 SpellAbility f = flashAtEndOfTurn(getPlayer());
                 if (f != null) return List.of(f);
+            }
+            if (TWEAKS.contains("prowesspre")) {
+                SpellAbility pp = prowessPrecombat(getPlayer());
+                if (pp != null) return List.of(pp);
             }
             if (TWEAKS.contains("manahold")) ManaHold.plan(getPlayer());
             if (TWEAKS.contains("spiderham")) {
@@ -212,6 +217,43 @@ public class AiTweaks {
         SpellAbility best = bestCreatureSpell(me, true);
         if (best != null) ControlBrain.count("flasheot");
         return best;
+    }
+
+    /**
+     * prowesspre (2026-10-12, Izzet Prowess at 14.6% vs the field): in our main phase 1, with the stack empty and an
+     * untapped prowess creature that can attack this turn, cast the cheapest instant or sorcery (mana value <= 2) that
+     * needs no target -- cantrips such as Opt, Sleight of Hand, Flow State -- so the attack carries the prowess bonus.
+     * Forge's AI otherwise tends to cast them at the opponent's end step. Burn and counterspells (targeted) stay Forge's.
+     */
+    static SpellAbility prowessPrecombat(Player me) {
+        Game g = me.getGame();
+        if (!g.getPhaseHandler().isPlayerTurn(me) || g.getPhaseHandler().getPhase() != PhaseType.MAIN1 || !g.getStack().isEmpty()) return null;
+        boolean attacker = false;
+        for (Card c : me.getCreaturesInPlay())
+            if (c.hasKeyword(forge.game.keyword.Keyword.PROWESS) && c.isUntapped() && !c.hasSickness()) attacker = true;
+        if (!attacker) return null;
+        forge.game.card.CardCollection hand = new forge.game.card.CardCollection();
+        for (Card c : me.getCardsIn(ZoneType.Hand))
+            if ((c.isInstant() || c.isSorcery()) && !c.isCreature() && c.getCMC() <= 2) hand.add(c);
+        SpellAbility best = null;
+        for (SpellAbility sa : forge.ai.ComputerUtilAbility.getSpellAbilities(hand, me)) {
+            if (!sa.isSpell() || sa.isAdventure() || targets(sa)) continue;
+            sa.setActivatingPlayer(me);
+            try {
+                if (!sa.canPlay() || !ComputerUtilCost.canPayCost(sa, me, false)) continue;
+            } catch (Exception e) {
+                continue;
+            }
+            if (best == null || sa.getHostCard().getCMC() < best.getHostCard().getCMC()) best = sa;
+        }
+        if (best != null) ControlBrain.count("prowesspre");
+        return best;
+    }
+
+    static boolean targets(SpellAbility sa) {
+        for (SpellAbility x = sa; x != null; x = x.getSubAbility())
+            if (x.usesTargeting()) return true;
+        return false;
     }
 
     static SpellAbility bestCreatureSpell(Player me, boolean flashOnly) {
