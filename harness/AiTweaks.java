@@ -37,6 +37,8 @@ import java.util.List;
  * spendmana — when Forge's AI would pass in our main phase 2, cast the most expensive castable creature in hand.
  * flasheot — at the opponent's end step, cast the most expensive castable flash creature in hand.
  * prowesspre — in our main 1, with an untapped prowess creature able to attack, cast cheap untargeted spells first.
+ * prowessplan — Izzet Prowess (ProwessBrain): each turn "can we win this turn?" (lethal search over cheap spells, burn
+ *   targets and Eddymurk Crab, worst-case blocks); if so, cast the line and attack with everything; if not, set-up mode.
  * leyburn / leyotter / leydig / leyland — with leyline, fixes from reading losses (LeylineBrain): no Burn Together on
  * our own creature before combat, and "attack, then Burn Together to the face" counted as lethal; Elusive Otter pumped
  * past every blocker; cantrip pumps cast to dig when stuck; the land drop that lets a cheap creature be cast.
@@ -98,6 +100,10 @@ public class AiTweaks {
                 SpellAbility f = flashAtEndOfTurn(getPlayer());
                 if (f != null) return List.of(f);
             }
+            if (TWEAKS.contains("prowessplan")) {
+                SpellAbility pw = ProwessBrain.choose(getPlayer());
+                if (pw != null) return List.of(pw);
+            }
             if (TWEAKS.contains("prowesspre")) {
                 SpellAbility pp = prowessPrecombat(getPlayer());
                 if (pp != null) return List.of(pp);
@@ -132,10 +138,12 @@ public class AiTweaks {
                     return null;
                 }
                 ai = TWEAKS.contains("leyline") ? LeylineBrain.post(getPlayer(), ai) : ai;
+                ai = TWEAKS.contains("prowessplan") ? ProwessBrain.post(getPlayer(), ai) : ai;
                 return spendIfIdle(getPlayer(), ai);
             }
             List<SpellAbility> ai = super.chooseSpellAbilityToPlay();
             ai = TWEAKS.contains("leyline") ? LeylineBrain.post(getPlayer(), ai) : ai;
+            ai = TWEAKS.contains("prowessplan") ? ProwessBrain.post(getPlayer(), ai) : ai;
             return spendIfIdle(getPlayer(), ai);
         }
 
@@ -176,6 +184,7 @@ public class AiTweaks {
             super.declareAttackers(attacker, combat);
             if (TWEAKS.contains("protect")) ProtectBrain.holdTamBack(getPlayer(), combat);
             if (TWEAKS.contains("leyline")) LeylineBrain.forceAttack(getPlayer(), combat);
+            if (TWEAKS.contains("prowessplan")) ProwessBrain.forceAttack(getPlayer(), combat);
         }
 
         @Override
