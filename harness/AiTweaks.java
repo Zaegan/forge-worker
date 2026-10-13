@@ -37,6 +37,7 @@ import java.util.List;
  * spendmana — when Forge's AI would pass in our main phase 2, cast the most expensive castable creature in hand.
  * flasheot — at the opponent's end step, cast the most expensive castable flash creature in hand.
  * prowesspre — in our main 1, with an untapped prowess creature able to attack, cast cheap untargeted spells first.
+ * reckless=NAME — the player whose deck name contains NAME uses Forge's Reckless AI profile (aggressive attacks).
  * prowessplan — Izzet Prowess (ProwessBrain): each turn "can we win this turn?" (lethal search over cheap spells, burn
  *   targets and Eddymurk Crab, worst-case blocks); if so, cast the line and attack with everything; if not, set-up mode.
  * leyburn / leyotter / leydig / leyland — with leyline, fixes from reading losses (LeylineBrain): no Burn Together on
@@ -87,10 +88,28 @@ public class AiTweaks {
             super(game, p, lp);
         }
 
-        boolean simChecked;
+        boolean simChecked, profileChecked;
+
+        /** reckless=NAME (2026-10-12, Boros Dwarves: 1-3 attacks a game vs v2.3): the player whose DECK name contains
+         *  NAME uses Forge's own Reckless AI profile (attacks into trades, plays aggro); everyone else keeps theirs.
+         *  Set at the player's first decision: players are named P1/P2, the deck is only known in the game. */
+        void checkProfile() {
+            if (profileChecked) return;
+            profileChecked = true;
+            String deck;
+            try {
+                deck = getPlayer().getRegisteredPlayer().getDeck().getName();
+            } catch (Exception e) {
+                return;
+            }
+            for (String tw : TWEAKS.split(","))
+                if (tw.startsWith("reckless=") && deck != null && deck.contains(tw.substring("reckless=".length())))
+                    ((LobbyPlayerAi) getPlayer().getLobbyPlayer()).setAiProfile("Reckless");
+        }
 
         @Override
         public List<SpellAbility> chooseSpellAbilityToPlay() {
+            checkProfile();
             if (!simChecked) {   // simhybrid / simfull: Forge's search-based AI, for the Izzet Leyline player only
                 simChecked = true;
                 if ((TWEAKS.contains("simhybrid") || TWEAKS.contains("simfull")) && LeylineBrain.deck(getPlayer()))
@@ -167,6 +186,7 @@ public class AiTweaks {
 
         @Override
         public boolean mulliganKeepHand(Player firstPlayer, int cardsToReturn) {
+            checkProfile();
             if (TWEAKS.contains("leylinemull") && LeylineBrain.deck(getPlayer()))
                 return LeylineBrain.keepHand(getPlayer(), cardsToReturn);
             return super.mulliganKeepHand(firstPlayer, cardsToReturn);
