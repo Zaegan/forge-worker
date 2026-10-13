@@ -155,11 +155,14 @@ function dwell_filter($db, $worker, $camps, $order, $now) {
     if (!$row || !$order || setting_of($camps[$order[0]]) === $row[0]) return [$order, true];
     $same = array_values(array_filter($order, fn($n) => setting_of($camps[$n]) === $row[0]));
     if (!$same) return [$order, true];
-    $target = setting_of($camps[$order[0]]);
-    $waiting = 0;   // games open under the new setting, in packages ahead of the machine's own next one
+    // games open in ALL packages ahead of the machine's own next one, whatever their setting (2026-10-12: counting
+    // only the first package's exact setting deadlocked the queue -- a harness canary split into three 12-game
+    // campaigns, one per tweak set, sat first and never reached the threshold, and the 6000 games queued behind it
+    // were never counted, so no machine ever switched)
+    $waiting = 0;
     foreach ($order as $n) {
         if ($n === $same[0]) break;
-        if (setting_of($camps[$n]) === $target) $waiting += $OPEN[$n] ?? 0;
+        $waiting += $OPEN[$n] ?? 0;
     }
     // a v4+ client switches one worker at a time as each finishes (~10 s start-up each, no drain): far cheaper
     global $CLIENT_V;
