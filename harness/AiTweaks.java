@@ -38,6 +38,8 @@ import java.util.List;
  * flasheot — at the opponent's end step, cast the most expensive castable flash creature in hand.
  * prowesspre — in our main 1, with an untapped prowess creature able to attack, cast cheap untargeted spells first.
  * reckless=NAME — the player whose deck name contains NAME uses Forge's Reckless AI profile (aggressive attacks).
+ * equipidle — when Forge would pass in our main phase, equip unattached equipment we can pay for (haste givers on a
+ *   creature that can't attack yet, others on our best attacker; after combat, on any creature).
  * prowessplan — Izzet Prowess (ProwessBrain): each turn "can we win this turn?" (lethal search over cheap spells, burn
  *   targets and Eddymurk Crab, worst-case blocks); if so, cast the line and attack with everything; if not, set-up mode.
  * leyburn / leyotter / leydig / leyland — with leyline, fixes from reading losses (LeylineBrain): no Burn Together on
@@ -227,6 +229,10 @@ public class AiTweaks {
      * for, so mana is not left unused.
      */
     static List<SpellAbility> spendIfIdle(Player me, List<SpellAbility> ai) {
+        if (TWEAKS.contains("equipidle") && (ai == null || ai.isEmpty())) {
+            SpellAbility e = equipIdle(me);
+            if (e != null) return List.of(e);
+        }
         if (!TWEAKS.contains("spendmana") || (ai != null && !ai.isEmpty())) return ai;
         Game g = me.getGame();
         if (!g.getPhaseHandler().isPlayerTurn(me) || g.getPhaseHandler().getPhase() != PhaseType.MAIN2 || !g.getStack().isEmpty()) return ai;
@@ -283,6 +289,50 @@ public class AiTweaks {
         for (SpellAbility x = sa; x != null; x = x.getSubAbility())
             if (x.usesTargeting()) return true;
         return false;
+    }
+
+    /**
+     * equipidle (2026-10-13, Boros Dwarves: 13% of turns ended with an unattached equipment, a creature, and the mana
+     * to equip it -- 63% of them Lavaspur Boots, which gives haste): when Forge's AI would pass in our main phase with
+     * the stack empty, activate the equip ability of an unattached equipment we can pay for. Before combat: equipment
+     * that grants haste goes on our strongest creature that can't attack yet (so it can), other equipment on our
+     * strongest creature that can attack; after combat, on our strongest creature. Only unattached equipment is
+     * moved, so nothing is shuffled back and forth.
+     */
+    static SpellAbility equipIdle(Player me) {
+        Game g = me.getGame();
+        PhaseType ph = g.getPhaseHandler().getPhase();
+        if (!g.getPhaseHandler().isPlayerTurn(me) || !g.getStack().isEmpty() || (ph != PhaseType.MAIN1 && ph != PhaseType.MAIN2)) return null;
+        List<Card> mine = new java.util.ArrayList<>(me.getCreaturesInPlay());
+        if (mine.isEmpty()) return null;
+        mine.sort((x, y) -> Integer.compare(y.getNetPower(), x.getNetPower()));
+        for (Card eq : me.getCardsIn(ZoneType.Battlefield)) {
+            if (!eq.isEquipment() || eq.isEquipping()) continue;
+            boolean haste = eq.getStaticAbilities().stream().anyMatch(st -> String.valueOf(st.getParam("AddKeyword")).contains("Haste"));
+            for (SpellAbility sa : eq.getSpellAbilities()) {
+                if (!sa.isEquip()) continue;
+                sa.setActivatingPlayer(me);
+                Card target = null;
+                for (Card c : mine) {
+                    boolean canAttack = c.isUntapped() && (!c.isSick() || c.hasKeyword(forge.game.keyword.Keyword.HASTE));
+                    if (ph == PhaseType.MAIN1 && haste && (canAttack || c.isTapped())) continue;
+                    if (ph == PhaseType.MAIN1 && !haste && !canAttack) continue;
+                    if (sa.canTarget(c)) { target = c; break; }
+                }
+                if (target == null) continue;
+                sa.resetTargets();
+                sa.getTargets().add(target);
+                try {
+                    if (!sa.canPlay() || !ComputerUtilCost.canPayCost(sa, me, false)) { sa.resetTargets(); continue; }
+                } catch (Exception e) {
+                    sa.resetTargets();
+                    continue;
+                }
+                ControlBrain.count("equipidle" + (haste && ph == PhaseType.MAIN1 ? "_haste" : ""));
+                return sa;
+            }
+        }
+        return null;
     }
 
     static SpellAbility bestCreatureSpell(Player me, boolean flashOnly) {
