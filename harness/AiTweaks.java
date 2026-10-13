@@ -40,6 +40,8 @@ import java.util.List;
  * reckless=NAME — the player whose deck name contains NAME uses Forge's Reckless AI profile (aggressive attacks).
  * dwarvesetb — Boros Dwarves: cast Thorin, Mountain-king and Chainsaw before combat (their enter-the-battlefield
  *   attach/damage then shapes this turn's combat).
+ * dwarvesetb2 — as dwarvesetb, but once the opponent has removed one of our creatures outside combat (removal, sweeper),
+ *   Thorin is held -- also from Forge's own choices -- until the opponent is tapped out.
  * lordtarget — when our damage spell or trigger targets an opponent's creature, retarget it to a "lord" (a creature
  *   whose continuous ability affects other creatures, e.g. Galerider Sliver) the damage kills, unless already a lord.
  * equipidle — when Forge would pass in our main phase, equip unattached equipment we can pay for (haste givers on a
@@ -125,6 +127,7 @@ public class AiTweaks {
                 SpellAbility f = flashAtEndOfTurn(getPlayer());
                 if (f != null) return List.of(f);
             }
+            if (TWEAKS.contains("dwarvesetb2")) removalWatch(getPlayer());
             if (TWEAKS.contains("dwarvesetb")) {
                 SpellAbility d = dwarvesEtb(getPlayer());
                 if (d != null) return List.of(d);
@@ -174,6 +177,11 @@ public class AiTweaks {
             ai = TWEAKS.contains("leyline") ? LeylineBrain.post(getPlayer(), ai) : ai;
             ai = TWEAKS.contains("prowessplan") ? ProwessBrain.post(getPlayer(), ai) : ai;
             if (TWEAKS.contains("lordtarget") && ai != null) for (SpellAbility x : ai) lordRetarget(getPlayer(), x);
+            if (TWEAKS.contains("dwarvesetb2") && ai != null && holdThorin(getPlayer())
+                    && ai.stream().anyMatch(x -> x.getHostCard() != null && x.getHostCard().getName().equals("Thorin, Mountain-king"))) {
+                ControlBrain.count("dwarvesetb2_hold");
+                return null;
+            }
             return spendIfIdle(getPlayer(), ai);
         }
 
@@ -358,8 +366,9 @@ public class AiTweaks {
         boolean equipment = me.getCardsIn(ZoneType.Battlefield).stream().anyMatch(Card::isEquipment);
         boolean target = op != null && !op.getCreaturesInPlay().isEmpty();
         forge.game.card.CardCollection hand = new forge.game.card.CardCollection();
+        boolean thorinOk = equipment && !(TWEAKS.contains("dwarvesetb2") && holdThorin(me));
         for (Card c : me.getCardsIn(ZoneType.Hand))
-            if ((c.getName().equals("Thorin, Mountain-king") && equipment) || (c.getName().equals("Chainsaw") && target)) hand.add(c);
+            if ((c.getName().equals("Thorin, Mountain-king") && thorinOk) || (c.getName().equals("Chainsaw") && target)) hand.add(c);
         for (SpellAbility sa : forge.ai.ComputerUtilAbility.getSpellAbilities(hand, me)) {
             if (!sa.isSpell()) continue;
             sa.setActivatingPlayer(me);
@@ -373,6 +382,59 @@ public class AiTweaks {
             }
         }
         return null;
+    }
+
+    /** dwarvesetb2 (user, 2026-10-13: push Thorin out fast against creature decks, hold him until the opponent is
+     *  tapped out once our creatures are being removed by spells). Removal is seen on the stack (our AI gets priority
+     *  to respond to it): an opponent's spell or ability that destroys, exiles, damages or sacrifices one of OUR
+     *  creatures, or hits all creatures. (Counting our creatures that left the battlefield misread combat deaths: the
+     *  AI is often not asked anything during the combat damage step.) */
+    static final java.util.Map<Player, java.util.Set<Integer>> seenStack = new java.util.HashMap<>();
+    static final java.util.Map<Player, Integer> removedBySpells = new java.util.HashMap<>();
+    static final java.util.Map<Player, Game> watchedGame = new java.util.HashMap<>();
+    static final java.util.Set<forge.game.ability.ApiType> REMOVAL = java.util.EnumSet.of(
+            forge.game.ability.ApiType.Destroy, forge.game.ability.ApiType.DestroyAll, forge.game.ability.ApiType.ChangeZone,
+            forge.game.ability.ApiType.ChangeZoneAll, forge.game.ability.ApiType.DealDamage, forge.game.ability.ApiType.DamageAll,
+            forge.game.ability.ApiType.Sacrifice, forge.game.ability.ApiType.SacrificeAll);
+
+    static void removalWatch(Player me) {
+        Game g = me.getGame();
+        if (watchedGame.get(me) != g) { watchedGame.put(me, g); seenStack.put(me, new java.util.HashSet<>()); removedBySpells.put(me, 0); }
+        for (forge.game.spellability.SpellAbilityStackInstance si : g.getStack()) {
+            Card src = si.getSpellAbility() == null ? null : si.getSpellAbility().getHostCard();
+            // triggers record no activating player: judge "ours" by who controls the source
+            if (si.getActivatingPlayer() == me || (src != null && src.getController() == me) || !seenStack.get(me).add(si.getId())) continue;
+            for (SpellAbility x = si.getSpellAbility(); x != null; x = x.getSubAbility()) {
+                if (x.getApi() == null || !REMOVAL.contains(x.getApi())) continue;
+                boolean hit = false;
+                if (x.getApi().name().endsWith("All")) hit = String.valueOf(x.getParam("ValidCards")).contains("Creature");
+                else if (x.getTargets() != null)
+                    for (Card t : x.getTargets().getTargetCards()) if (t.getController() == me && t.isCreature()) hit = true;
+                if (hit) {
+                    removedBySpells.merge(me, 1, Integer::sum);
+                    // counters are summed over both players in a game: keep only the Dwarves player's own count
+                    if (holdsThorin(me)) ControlBrain.count("dwarvesetb2_removal_seen");
+                    break;
+                }
+            }
+        }
+    }
+
+    static boolean holdsThorin(Player me) {
+        for (Card c : me.getAllCards()) if (c.getName().equals("Thorin, Mountain-king")) return true;
+        return false;
+    }
+
+    /** hold Thorin: our creatures have been removed by spells and the opponent still has untapped mana */
+    static boolean holdThorin(Player me) {
+        if (removedBySpells.getOrDefault(me, 0) == 0 || watchedGame.get(me) != me.getGame()) return false;
+        for (Player p : me.getGame().getPlayers()) {
+            if (p == me) continue;
+            long open = p.getCardsIn(ZoneType.Battlefield).stream()
+                    .filter(c -> c.isLand() && c.isUntapped() && !c.getManaAbilities().isEmpty()).count();
+            if (open > 0) return true;
+        }
+        return false;
     }
 
     /** a creature whose continuous ability affects other creatures (a "lord": Galerider Sliver, Predatory Sliver...) */
