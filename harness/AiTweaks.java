@@ -102,16 +102,15 @@ public class AiTweaks {
         return false;
     }
 
-    static final java.util.Map<Player, String> DECK_NAME = new java.util.WeakHashMap<>();
-
+    /** No cache (2026-10-13): Forge's players compare equal by id (1, 2) across games, so a cache keyed by player
+     *  served a long-lived worker's FIRST game's deck name in every later game -- Boros Dwarves' scoped rules were off
+     *  whenever its seat had first held another deck. */
     static String deckName(Player p) {
-        return DECK_NAME.computeIfAbsent(p, q -> {
-            try {
-                return q.getRegisteredPlayer().getDeck().getName();
-            } catch (Exception e) {
-                return null;
-            }
-        });
+        try {
+            return p.getRegisteredPlayer().getDeck().getName();
+        } catch (Exception e) {
+            return null;
+        }
     }
     static int bites; // Fateful Bites the tweak chose this game (reset by MatchGames)
 
