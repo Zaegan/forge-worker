@@ -29,7 +29,7 @@ param(
     [int]$IdleWait = 20                     # seconds to wait before asking again when the server has no work
 )
 $Waiting = 2                                # games queued in each game worker beyond the one it is playing
-$ClientVersion = 5                          # the server can ask clients older than its minimum to update
+$ClientVersion = 6                          # the server can ask clients older than its minimum to update
 $ErrorActionPreference = "Stop"
 $ProgressPreference = "SilentlyContinue"   # Invoke-WebRequest's progress bar makes downloads very slow on PS 5.1
 [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
@@ -251,10 +251,13 @@ function StartWorker($classes, $tweaks, $key) {
     $psi = New-Object System.Diagnostics.ProcessStartInfo
     $psi.FileName = $java
     $psi.Arguments = "-Xmx2048m -Djava.awt.headless=true -Dio.netty.tryReflectionSetAccessible=true -Dfile.encoding=UTF-8 " +
+                     "-Dstdout.encoding=UTF-8 -Dstderr.encoding=UTF-8 " +
                      "`"-Dforge.sim.gamelog=$logs`" -Dforge.sim.tweaks=$tweaks -cp `"$jar$sep$classes`" MatchWorker"
     $psi.WorkingDirectory = $ForgeDir
     $psi.UseShellExecute = $false
     $psi.RedirectStandardInput = $true; $psi.RedirectStandardOutput = $true; $psi.RedirectStandardError = $true
+    # v6: read the game worker's output as UTF-8 (Windows' default code page turned "Kíli" into "KÃ­li" in results)
+    $psi.StandardOutputEncoding = [System.Text.Encoding]::UTF8; $psi.StandardErrorEncoding = [System.Text.Encoding]::UTF8
     $psi.CreateNoWindow = $true
     $p = [Diagnostics.Process]::Start($psi)
     try { $p.PriorityClass = "BelowNormal" } catch { }
