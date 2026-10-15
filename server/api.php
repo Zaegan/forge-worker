@@ -215,7 +215,8 @@ if ($a === 'job') {
     // deck lines paused): only campaigns whose name starts with its text are issued; priority alone leaked ~70% of
     // the games to lower work in the gaps between batches, which workers then queued locally ahead of the next batch
     $hold = hold_prefix($DATA);
-    if ($hold !== '') $order = array_values(array_filter($order, fn($n) => str_starts_with($n, $hold)));
+    // harness canaries (run 'canary/...') always pass: a new harness must be checkable during a hold
+    if ($hold !== '') $order = array_values(array_filter($order, fn($n) => str_starts_with($n, $hold) || str_starts_with($camps[$n]['run'] ?? '', 'canary/')));
     foreach ($order as $name) {
         $meta = $camps[$name];
         $meta['priority'] = $wts[$name]['priority'];
@@ -321,7 +322,7 @@ if ($a === 'withdrawn') {   // campaigns whose not-yet-started games workers sho
         $m = json_decode(file_get_contents($f), true);
         if (!empty($m['withdrawn'])) $w[] = basename(dirname($f));
         // under a hold, everything else too: workers drop its unstarted games (their leases lapse and reopen later)
-        elseif (hold_prefix($DATA) !== '' && !str_starts_with(basename(dirname($f)), hold_prefix($DATA))) $w[] = basename(dirname($f));
+        elseif (hold_prefix($DATA) !== '' && !str_starts_with(basename(dirname($f)), hold_prefix($DATA)) && !str_starts_with($m['run'] ?? '', 'canary/')) $w[] = basename(dirname($f));
     }
     out(200, ['withdrawn' => $w]);
 }
