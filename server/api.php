@@ -188,6 +188,8 @@ function remember_setting($db, $worker, $setting, $now, $fresh) {
     $u->bindValue(1, $worker); $u->bindValue(2, $setting); $u->bindValue(3, $now); $u->execute();
 }
 
+function hold_prefix($DATA) { return trim((string)@file_get_contents("$DATA/HOLD")); }
+
 function open_counts($db) {
     $open = [];
     $r = $db->query("select campaign, count(*) from games where status='open' group by campaign");
@@ -209,6 +211,11 @@ if ($a === 'job') {
     $SLOTS = $slots;
     $CLIENT_V = intval($_GET['v'] ?? 0);
     [$order, $fresh] = dwell_filter($db, $worker, $camps, order_campaigns($camps, $wts, $OPEN), $now);
+    // DATA/HOLD holds the whole queue for one project (2026-10-15, the user's sealed project: "the whole queue",
+    // deck lines paused): only campaigns whose name starts with its text are issued; priority alone leaked ~70% of
+    // the games to lower work in the gaps between batches, which workers then queued locally ahead of the next batch
+    $hold = hold_prefix($DATA);
+    if ($hold !== '') $order = array_values(array_filter($order, fn($n) => str_starts_with($n, $hold)));
     foreach ($order as $name) {
         $meta = $camps[$name];
         $meta['priority'] = $wts[$name]['priority'];
@@ -313,6 +320,8 @@ if ($a === 'withdrawn') {   // campaigns whose not-yet-started games workers sho
     foreach (glob("$DATA/campaigns/*/meta.json") as $f) {
         $m = json_decode(file_get_contents($f), true);
         if (!empty($m['withdrawn'])) $w[] = basename(dirname($f));
+        // under a hold, everything else too: workers drop its unstarted games (their leases lapse and reopen later)
+        elseif (hold_prefix($DATA) !== '' && !str_starts_with(basename(dirname($f)), hold_prefix($DATA))) $w[] = basename(dirname($f));
     }
     out(200, ['withdrawn' => $w]);
 }
