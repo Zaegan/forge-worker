@@ -55,6 +55,62 @@ public class MatchGames {
     }
 
     /**
+     * Game work, counted from the game itself (2026-10-15, user: a cap on how far a game has got, not on wall time,
+     * "with a penalty for turns which involve many creatures or activated abilities"). At every phase of every turn:
+     * 1 for the phase, plus WC for each creature on the battlefield and WA for each permanent there with a non-mana
+     * activated ability -- the board the AI must evaluate. Deterministic: paired games stay paired on every machine
+     * and at any load. Tweak "workcap=CAP" (or "workcap=CAP:WC:WA"; CAP 0 = measure only) ends a game as a draw once
+     * its work reaches CAP ("end":"cap"). Without the tweak the meter only measures.
+     */
+    static final class WorkMeter {
+        static final String SPEC = spec();
+        static final boolean ON = SPEC != null;
+        static final long CAP = ON ? Long.parseLong(SPEC.split(":")[0]) : 0;
+        static final long WC = ON && SPEC.split(":").length > 1 ? Long.parseLong(SPEC.split(":")[1]) : 1;
+        static final long WA = ON && SPEC.split(":").length > 2 ? Long.parseLong(SPEC.split(":")[2]) : 1;
+
+        static String spec() {
+            for (String t : System.getProperty("forge.sim.tweaks", "").split(","))
+                if (t.trim().startsWith("workcap=")) return t.trim().substring("workcap=".length());
+            return null;
+        }
+
+        final Game game;
+        final long cap;
+        long phases, creatures, abilities, events;
+        boolean capped;
+
+        WorkMeter(Game game, long cap) {
+            this.game = game;
+            this.cap = cap;
+        }
+
+        long work() { return phases + WC * creatures + WA * abilities; }
+
+        @com.google.common.eventbus.Subscribe
+        public void event(forge.game.event.Event e) {
+            if (capped || game.isGameOver()) return;
+            events++;
+            if (!(e instanceof forge.game.event.GameEventTurnPhase)) return;
+            phases++;
+            for (forge.game.player.Player p : game.getPlayers())
+                for (forge.game.card.Card c : p.getCardsIn(forge.game.zone.ZoneType.Battlefield)) {
+                    if (c.isCreature()) creatures++;
+                    for (forge.game.spellability.SpellAbility sa : c.getSpellAbilities())
+                        if (sa.isActivatedAbility() && !sa.isManaAbility()) { abilities++; break; }
+                }
+            if (cap > 0 && work() >= cap) {
+                capped = true;
+                game.setGameOver(GameEndReason.Draw);
+            }
+        }
+
+        String json() {
+            return "{\"work\":" + work() + ",\"phases\":" + phases + ",\"creatures\":" + creatures + ",\"abilities\":" + abilities + ",\"events\":" + events + "}";
+        }
+    }
+
+    /**
      * Paired seeds: Forge builds each library from a hash map (Match.prepareAllZones), so its order before the shuffle
      * depends on which cards are in the deck, and swapping one card scrambles every position. When the game starts
      * (before opening hands), put each library in deck-file order and shuffle it again with a generator seeded from the
@@ -240,18 +296,50 @@ public class MatchGames {
         ControlBrain.tracedTurn = -1;
         Deployments deployed = new Deployments(game);
         game.subscribeToEvents(deployed);
+        WorkMeter work = new WorkMeter(game, WorkMeter.CAP);
+        game.subscribeToEvents(work);
         LibraryDepth libDepth = new LibraryDepth();
         game.subscribeToEvents(libDepth);
         ToyGames.Draws draws = new ToyGames.Draws(game);
         game.subscribeToEvents(draws);
         long t0 = System.nanoTime();
         String end;
-        try {
-            TimeLimitedCodeBlock.runWithTimeout(() -> match.startGame(game), timeout, TimeUnit.SECONDS);
-            end = "finished";
-        } catch (Exception ex) {
-            game.setGameOver(GameEndReason.Draw);
-            end = ex.getClass().getSimpleName().contains("Timeout") ? "timeout" : "error:" + ex.getClass().getSimpleName();
+        long cpuMs = -1;
+        if (WorkMeter.ON) {
+            // work cap: the game ends at a budget of game work (deterministic, the same on every machine and at any
+            // load); the timeout is only a backstop for genuine hangs, in CPU seconds of the game's own thread (not
+            // wall time, which contention stretches), at least 120
+            Throwable[] err = new Throwable[1];
+            Thread t = new Thread(() -> {
+                try { match.startGame(game); } catch (Throwable ex) { err[0] = ex; }
+            }, "forge-game");
+            t.setDaemon(true);
+            java.lang.management.ThreadMXBean mx = java.lang.management.ManagementFactory.getThreadMXBean();
+            long cpuLimit = Math.max(120, timeout) * 1_000_000_000L, wallLimit = 30L * 60 * 1_000_000_000L;
+            t.start();
+            try {
+                while (t.isAlive()) {
+                    t.join(200);
+                    long c = mx.getThreadCpuTime(t.getId());
+                    if (c > cpuLimit || System.nanoTime() - t0 > wallLimit) break;
+                }
+            } catch (InterruptedException ie) { Thread.currentThread().interrupt(); }
+            cpuMs = Math.max(-1, mx.getThreadCpuTime(t.getId()) / 1_000_000);
+            if (t.isAlive()) {
+                game.setGameOver(GameEndReason.Draw);
+                end = "timeout";
+            } else if (err[0] != null) {
+                game.setGameOver(GameEndReason.Draw);
+                end = "error:" + err[0].getClass().getSimpleName();
+            } else end = work.capped ? "cap" : "finished";
+        } else {
+            try {
+                TimeLimitedCodeBlock.runWithTimeout(() -> match.startGame(game), timeout, TimeUnit.SECONDS);
+                end = "finished";
+            } catch (Exception ex) {
+                game.setGameOver(GameEndReason.Draw);
+                end = ex.getClass().getSimpleName().contains("Timeout") ? "timeout" : "error:" + ex.getClass().getSimpleName();
+            }
         }
         draws.resolve();
         long ms = (System.nanoTime() - t0) / 1_000_000;
@@ -270,7 +358,11 @@ public class MatchGames {
         }
         GameOutcome o = game.getOutcome();
         String winnerSeat = (o == null || o.isDraw() || o.getWinningLobbyPlayer() == null) ? "" : o.getWinningLobbyPlayer().getName();
-        String winner = winnerSeat.isEmpty() ? "" : seat[Integer.parseInt(winnerSeat.substring(1)) - 1];
+        // A game that did not finish is a draw. Forge's setGameOver(Draw) marks every player who has not lost as a
+        // winner (Player.onGameOver) and getWinningLobbyPlayer then returns whichever comes first in a HashMap, so
+        // until 2026-10-15 a timed-out game got a coin-flip winner (sealed final: our deck "won" 52.8% of its timeouts
+        // and 72.3% of its finished games).
+        String winner = winnerSeat.isEmpty() || !end.equals("finished") ? "" : seat[Integer.parseInt(winnerSeat.substring(1)) - 1];
         String first = game.getStartingPlayer() == null ? "" : seat[Integer.parseInt(game.getStartingPlayer().getName().substring(1)) - 1];
         StringBuilder cards = new StringBuilder("{");
         for (int p = 0; p < 2; p++) {
@@ -323,7 +415,7 @@ public class MatchGames {
         mull.append("}");
         return "{\"a\":" + ToyGames.q(nameA) + ",\"b\":" + ToyGames.q(nameB) + ",\"game\":" + g
                 + ",\"winner\":" + ToyGames.q(winner) + ",\"first\":" + ToyGames.q(first) + ",\"end\":" + ToyGames.q(end)
-                + ",\"turns\":" + (o == null ? -1 : o.getLastTurnNumber()) + ",\"ms\":" + ms + ",\"game_seed\":" + gameSeed
+                + ",\"turns\":" + (o == null ? -1 : o.getLastTurnNumber()) + ",\"ms\":" + ms + ",\"cpu_ms\":" + cpuMs + ",\"work\":" + work.json() + ",\"game_seed\":" + gameSeed
                 + ",\"life\":" + life + ",\"mulligans\":" + mull + ",\"library\":" + lib + ",\"searched\":" + searched + ",\"deployed\":" + dep + (AiTweaks.TWEAKS.isEmpty() ? "" : ",\"tweak_bites\":" + AiTweaks.bites + ",\"control_brain\":" + ControlBrain.json()) + ",\"cards\":" + cards + "}";
     }
 

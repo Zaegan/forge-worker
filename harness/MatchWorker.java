@@ -39,7 +39,7 @@ public class MatchWorker {
                     w.println(json);
                 }
                 out.println("@@DONE " + tag);
-                if (!json.contains("\"end\":\"finished\"")) {
+                if (!json.contains("\"end\":\"finished\"") && !json.contains("\"end\":\"cap\"")) {   // a capped game ended cleanly in its own thread
                     // a timed-out (or failed) game's thread can keep running and drawing from Forge's shared random
                     // generator, which would change the next game this JVM plays: exit, so the engine starts a fresh one
                     out.flush();

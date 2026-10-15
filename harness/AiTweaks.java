@@ -75,7 +75,15 @@ public class AiTweaks {
      * act for nothing else. Running deck lines started with "spiderham,control,protect" pick these up too.
      */
     static final String FIELD_RULES = "reckless=Dwarves,equipidle@Dwarves,dwarvesetb2@Dwarves";
-    static final String TWEAKS = withField(System.getProperty("forge.sim.tweaks", ""));
+    static final String TWEAKS = withField(withoutWorkCap(System.getProperty("forge.sim.tweaks", "")));
+
+    /** The work cap ("workcap=..." in the tweaks, MatchGames.WorkMeter) is a game setting, not an AI rule: AI players
+     *  never see it, so a campaign with only a work cap plays Forge's stock AI exactly as one with no tweaks. */
+    static String withoutWorkCap(String t) {
+        StringBuilder b = new StringBuilder();
+        for (String x : t.split(",")) if (!x.isBlank() && !x.trim().startsWith("workcap=")) b.append(b.length() > 0 ? "," : "").append(x.trim());
+        return b.toString();
+    }
 
     static String withField(String t) {
         if (!java.util.Arrays.asList(t.split(",")).contains("control")) return t;
