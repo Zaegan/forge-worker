@@ -321,10 +321,10 @@ public class MatchGames {
                 while (t.isAlive()) {
                     t.join(200);
                     long c = mx.getThreadCpuTime(t.getId());
+                    if (c >= 0) cpuMs = c / 1_000_000;   // the last reading while the thread lived (-1 once it ends)
                     if (c > cpuLimit || System.nanoTime() - t0 > wallLimit) break;
                 }
             } catch (InterruptedException ie) { Thread.currentThread().interrupt(); }
-            cpuMs = Math.max(-1, mx.getThreadCpuTime(t.getId()) / 1_000_000);
             if (t.isAlive()) {
                 game.setGameOver(GameEndReason.Draw);
                 end = "timeout";
