@@ -153,6 +153,10 @@ function dwell_filter($db, $worker, $camps, $order, $now) {
     $st->bindValue(1, $worker);
     $row = $st->execute()->fetchArray(SQLITE3_NUM);
     if (!$row || !$order || setting_of($camps[$order[0]]) === $row[0]) return [$order, true];
+    // urgent work (priority >= 1000: harness canaries, the user's sealed project) is taken at once, however few of its
+    // games are left (2026-10-15: the last open game of a sealed batch sat 7.5 h below the switching threshold)
+    global $WTS;
+    if (isset($WTS[$order[0]]) && floatval($WTS[$order[0]]['priority']) >= 1000) return [$order, true];
     $same = array_values(array_filter($order, fn($n) => setting_of($camps[$n]) === $row[0]));
     if (!$same) return [$order, true];
     // games open in ALL packages ahead of the machine's own next one, whatever their setting (2026-10-12: counting
