@@ -320,7 +320,7 @@ public class MatchGames {
             try {
                 while (t.isAlive()) {
                     t.join(200);
-                    long c = mx.getThreadCpuTime(t.getId());
+                    long c = mx.getThreadCpuTime(t.threadId());
                     if (c >= 0) cpuMs = c / 1_000_000;   // the last reading while the thread lived (-1 once it ends)
                     if (c > cpuLimit || System.nanoTime() - t0 > wallLimit) break;
                 }
