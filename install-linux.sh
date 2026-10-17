@@ -16,9 +16,13 @@ if [ ! -x "$HOME/opt/pwsh/pwsh" ]; then
 fi
 echo "Downloading the worker..."
 curl -fsSLo "$D/worker.ps1" https://raw.githubusercontent.com/Zaegan/forge-worker/main/worker.ps1
-read -rsp "Paste this machine's token and press Enter: " T < /dev/tty; echo
-"$HOME/opt/pwsh/pwsh" -NoProfile -File "$D/worker.ps1" -Install -Server "$SERVER" -Threads "$N" -Token "$T"
-chmod 600 "$D/settings.json"
+if [ -s "$D/settings.json" ]; then
+  echo "Keeping the saved settings (token, worker count)."
+else
+  read -rsp "Paste this machine's token and press Enter: " T < /dev/tty; echo
+  "$HOME/opt/pwsh/pwsh" -NoProfile -File "$D/worker.ps1" -Install -Server "$SERVER" -Threads "$N" -Token "$T"
+  chmod 600 "$D/settings.json"
+fi
 cat > "$HOME/start-worker.sh" <<'EOS'
 #!/bin/sh
 setsid nohup "$HOME/opt/pwsh/pwsh" -NoProfile -File "$HOME/.forge-worker/worker.ps1" >> "$HOME/.forge-worker/worker.log" 2>&1 < /dev/null &
@@ -26,9 +30,13 @@ echo "worker started; log: ~/.forge-worker/worker.log"
 EOS
 cat > "$HOME/stop-worker.sh" <<'EOS'
 #!/bin/sh
-for p in $(ps -eo pid,args | awk '/[w]orker\.ps1/ {print $1}'); do kill -TERM -$(ps -o pgid= -p $p | tr -d ' ') 2>/dev/null; done
-echo "worker stopped"
+# a deliberate stop: the watchdog (every 5 min, from cron) leaves the worker off until ~/start-worker.sh
+"$HOME/opt/pwsh/pwsh" -NoProfile -File "$HOME/.forge-worker/worker.ps1" -Stop
 EOS
 chmod +x "$HOME/start-worker.sh" "$HOME/stop-worker.sh"
+# a rerun replaces a running worker (and a client older than v7 has no -Stop: stop it by its process group)
+for p in $(ps -eo pid,args | awk '/[w]orker\.ps1/ && !/-Watchdog/ {print $1}'); do kill -TERM -$(ps -o pgid= -p $p | tr -d ' ') 2>/dev/null; done
+sleep 2
 "$HOME/start-worker.sh"
-echo "Done: $N game workers. Stop with ~/stop-worker.sh, start again with ~/start-worker.sh."
+command -v crontab >/dev/null || echo "NOTE: no crontab on this machine: the watchdog cannot be installed (the worker runs without it)"
+echo "Done. Stop on purpose with ~/stop-worker.sh, start again with ~/start-worker.sh; anything else that stops it, the watchdog restarts within 5 minutes."
