@@ -175,7 +175,13 @@ public class AiTweaks {
                 if ((TWEAKS.contains("simhybrid") || TWEAKS.contains("simfull")) && LeylineBrain.deck(getPlayer()))
                     getAi().setUseSimulation(TWEAKS.contains("simfull") ? forge.ai.AIOption.USE_FULL_SIMULATION : forge.ai.AIOption.USE_HYBRID_SIMULATION);
             }
-            if (on("flasheot", getPlayer())) {
+            if (on("flashhold", getPlayer())) {
+                ManaHold.planFlash(getPlayer());
+                SpellAbility b = flashBlocker(getPlayer());
+                if (b != null) return List.of(b);
+            }
+            if (on("flasheot", getPlayer()) || on("flashhold", getPlayer())) {
+                if (on("flashhold", getPlayer()) && isOppEndStep(getPlayer())) ManaHold.release(getPlayer());
                 SpellAbility f = flashAtEndOfTurn(getPlayer());
                 if (f != null) return List.of(f);
             }
@@ -228,6 +234,10 @@ public class AiTweaks {
             List<SpellAbility> ai = super.chooseSpellAbilityToPlay();
             ai = TWEAKS.contains("leyline") ? LeylineBrain.post(getPlayer(), ai) : ai;
             ai = TWEAKS.contains("prowessplan") ? ProwessBrain.post(getPlayer(), ai) : ai;
+            if (on("edgargrow", getPlayer()) && ai != null && !ai.isEmpty() && holdForEdgar(getPlayer(), ai.get(0))) {
+                ControlBrain.count("edgargrow_pass");
+                return null;
+            }
             if (on("lordtarget", getPlayer()) && ai != null) for (SpellAbility x : ai) lordRetarget(getPlayer(), x);
             if (on("dwarvesetb2", getPlayer()) && ai != null && holdThorin(getPlayer())
                     && ai.stream().anyMatch(x -> x.getHostCard() != null && x.getHostCard().getName().equals("Thorin, Mountain-king"))) {
@@ -317,6 +327,63 @@ public class AiTweaks {
      * flasheot (2026-10-11, mono-blue: Enduring Curiosity cast in only 38% of games where drawn): at the opponent's end
      * step, with the stack empty, cast the most expensive flash creature in hand we can pay for.
      */
+    static boolean isOppEndStep(Player me) {
+        Game g = me.getGame();
+        return !g.getPhaseHandler().isPlayerTurn(me) && g.getPhaseHandler().getPhase() == PhaseType.END_OF_TURN && g.getStack().isEmpty();
+    }
+
+    /**
+     * flashhold, the blocker half: in the opponent's declare-attackers step, with creatures attacking us, flash in the
+     * held creature if it makes a good block -- it can block and kill an attacker without dying (attacker toughness <=
+     * its power, attacker power < its toughness, no evasion it can't block), or the attack would otherwise be lethal.
+     * The reserved lands are released first. Forge's AI then declares its blocks as usual.
+     */
+    static SpellAbility flashBlocker(Player me) {
+        Game g = me.getGame();
+        if (g.getPhaseHandler().isPlayerTurn(me) || g.getPhaseHandler().getPhase() != PhaseType.COMBAT_DECLARE_ATTACKERS
+                || !g.getStack().isEmpty() || g.getCombat() == null) return null;
+        List<Card> att = new java.util.ArrayList<>();
+        for (Card a : g.getCombat().getAttackers()) if (me.equals(g.getCombat().getDefenderPlayerByAttacker(a))) att.add(a);
+        if (att.isEmpty()) return null;
+        ManaHold.release(me);
+        SpellAbility best = bestCreatureSpell(me, true);
+        if (best == null || best.getHostCard() == null) return null;
+        Card f = best.getHostCard();
+        int dmg = 0;
+        for (Card a : att) dmg += a.getNetCombatDamage();
+        boolean good = dmg >= me.getLife();
+        for (Card a : att)
+            if (a.getNetToughness() <= f.getNetPower() && a.getNetPower() < f.getNetToughness()
+                    && !a.hasKeyword(forge.game.keyword.Keyword.FLYING) && !a.hasKeyword(forge.game.keyword.Keyword.MENACE)) good = true;
+        if (!good) return null;
+        ControlBrain.count("flashhold_block");
+        return best;
+    }
+
+    /**
+     * edgargrow (2026-10-17; user: "not cast anything if what you would cast is worse than giving him +2+2", and "if you
+     * never give him +1/+1 counters, he doesn't get the full benefit of his 4G"): on our turn, with Edgar, Moonlit
+     * Sovereign on our battlefield and no spell cast yet this turn, pass instead of casting SA unless it is worth more
+     * than his end-step counters. Worth of the counters: +2/+2 in Forge's creature evaluation (2 x 15 power + 2 x 10
+     * toughness = 50), plus 30 while he has no +1/+1 counter yet (his {4}{G} grows only creatures with one). Worth of the
+     * spell: a creature's own evaluation; a spell targeting an opponent's creature, that creature's evaluation;
+     * anything else 0. Lands and activated abilities are not spells and are never held.
+     */
+    static boolean holdForEdgar(Player me, SpellAbility sa) {
+        Game g = me.getGame();
+        if (!g.getPhaseHandler().isPlayerTurn(me) || !sa.isSpell() || me.getSpellsCastThisTurn() > 0) return false;
+        Card edgar = null;
+        for (Card c : me.getCardsIn(ZoneType.Battlefield)) if (c.getName().equals("Edgar, Moonlit Sovereign")) edgar = c;
+        if (edgar == null) return false;
+        int grow = 50 + (edgar.getPowerBonusFromCounters() > 0 ? 0 : 30), worth = 0;
+        Card host = sa.getHostCard();
+        if (host != null && host.isCreature()) worth = forge.ai.ComputerUtilCard.evaluateCreature(host);
+        else if (sa.getTargets() != null)
+            for (Card t : sa.getTargets().getTargetCards())
+                if (t.isCreature() && !t.getController().equals(me)) worth = Math.max(worth, forge.ai.ComputerUtilCard.evaluateCreature(t));
+        return worth < grow;
+    }
+
     static SpellAbility flashAtEndOfTurn(Player me) {
         Game g = me.getGame();
         if (g.getPhaseHandler().isPlayerTurn(me) || g.getPhaseHandler().getPhase() != PhaseType.END_OF_TURN || !g.getStack().isEmpty()) return null;

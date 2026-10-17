@@ -87,6 +87,72 @@ public class ManaHold {
         ControlBrain.count("hold_ferocity");
     }
 
+    static Game flashGame;
+    static int flashTurn = -1;
+    static Player flashFor;
+
+    /** the most expensive flash creature in hand that LANDS can pay for (mana value and colours), or null */
+    static Card flashCreature(Player me, List<Card> lands) {
+        Card best = null;
+        for (Card c : me.getCardsIn(ZoneType.Hand)) {
+            if (!c.isCreature() || !c.hasKeyword(forge.game.keyword.Keyword.FLASH) || c.getCMC() > lands.size()) continue;
+            if (pick(c, lands) == null) continue;
+            if (best == null || c.getCMC() > best.getCMC()) best = c;
+        }
+        return best;
+    }
+
+    /** lands that pay for C: one per coloured symbol (a land making that colour), the rest generic (preferring lands
+     *  that make none of C's colours); null if they can't */
+    static List<Card> pick(Card c, List<Card> lands) {
+        List<Card> left = new ArrayList<>(lands), out = new ArrayList<>();
+        String[] cols = {"W", "U", "B", "R", "G"};
+        int[] need = c.getManaCost().getColorShardCounts();
+        for (int i = 0; i < 5 && i < need.length; i++)
+            for (int k = 0; k < need[i]; k++) {
+                Card l = null;
+                for (Card x : left) if (produces(x, cols[i])) { l = x; break; }
+                if (l == null) return null;
+                left.remove(l); out.add(l);
+            }
+        int generic = (int) c.getCMC() - out.size();
+        left.sort((a, b) -> Boolean.compare(produces(a, "G"), produces(b, "G")));
+        for (int k = 0; k < generic; k++) {
+            if (left.isEmpty()) return null;
+            out.add(left.remove(0));
+        }
+        return out;
+    }
+
+    /**
+     * flashhold (2026-10-17; user: "reserve the mana required to cast him and then cast him if he's needed as a blocker
+     * or at EOT, since he doesn't really do anything on his first turn"): at our first priority of main phase 1, reserve
+     * the lands for the most expensive flash creature in hand, the way plan() does for Ferocity -- unless holding them
+     * costs the turn's biggest other creature play more than 1 mana value. AiTweaks casts it in the opponent's declare
+     * attackers step when it makes a good block, else at their end step (both release the lands first).
+     * Motivation: Forge's AI cast Edgar, Moonlit Sovereign in 47% of the games it drew him (other 5+ drops 84-87%),
+     * 97% of the time at flash speed from mana it happened to leave over.
+     */
+    static void planFlash(Player me) {
+        Game g = me.getGame();
+        if (!g.getPhaseHandler().isPlayerTurn(me) || g.getPhaseHandler().getPhase() != PhaseType.MAIN1) return;
+        int turn = g.getPhaseHandler().getTurn();
+        if (flashGame == g && flashTurn == turn && flashFor == me) return;
+        flashGame = g; flashTurn = turn; flashFor = me;
+        List<Card> lands = untappedLands(me);
+        Card f = flashCreature(me, lands);
+        if (f == null) return;
+        int mana = lands.size(), hold = (int) f.getCMC(), bestAll = 0, bestRest = 0;
+        for (Card c : me.getCardsIn(ZoneType.Hand))
+            if (c.isCreature() && c != f && !c.hasKeyword(forge.game.keyword.Keyword.FLASH)) {
+                if (c.getCMC() <= mana) bestAll = Math.max(bestAll, (int) c.getCMC());
+                if (c.getCMC() <= mana - hold) bestRest = Math.max(bestRest, (int) c.getCMC());
+            }
+        if (bestRest < bestAll - 1) { ControlBrain.count("flashhold_skipped_for_bigger_play"); return; }
+        for (Card l : pick(f, lands)) AiCardMemory.rememberCard(me, l, AiCardMemory.MemorySet.HELD_MANA_SOURCES_FOR_ENEMY_DECLBLK);
+        ControlBrain.count("flashhold");
+    }
+
     /** Before casting the held spell: free the reserved lands so its own payment can use them. */
     static void release(Player me) {
         AiCardMemory.clearMemorySet(me, AiCardMemory.MemorySet.HELD_MANA_SOURCES_FOR_ENEMY_DECLBLK);
