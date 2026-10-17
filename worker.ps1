@@ -31,7 +31,7 @@ param(
     [int]$IdleWait = 20                     # seconds to wait before asking again when the server has no work
 )
 $Waiting = 2                                # games queued in each game worker beyond the one it is playing
-$ClientVersion = 7                          # the server can ask clients older than its minimum to update
+$ClientVersion = 8                          # the server can ask clients older than its minimum to update
 $ErrorActionPreference = "Stop"
 $ProgressPreference = "SilentlyContinue"   # Invoke-WebRequest's progress bar makes downloads very slow on PS 5.1
 [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
@@ -157,6 +157,8 @@ function SendLogTail($why) {
             -Body ([Text.Encoding]::UTF8.GetBytes($tail)) -ContentType "text/plain; charset=utf-8" -TimeoutSec 60 | Out-Null
     } catch { }
 }
+# the stop and watchdog modes run native tools (taskkill, kill) whose stderr must not count as a failure (PS 5.1)
+if ($Stop -or $Watchdog) { $ErrorActionPreference = "Continue" }
 if ($Stop) {
     Set-Content -Path $stopMark -Value (Get-Date -Format s)
     $p = WorkerPid
@@ -181,6 +183,9 @@ $WindowTitleText = "Forge Worker: Ctrl+Q to stop (closing this window restarts i
 try { $Host.UI.RawUI.WindowTitle = $WindowTitleText } catch { }
 # the watchdog, and the Stop shortcut: set up once, on installed machines (settings.json; not the jetson-local worker)
 if (Test-Path $cfgFile) {
+    # schtasks and crontab report "not found" on stderr; under PowerShell 5.1 with ErrorActionPreference Stop that
+    # threw, and the catch below skipped the whole setup silently (v7 on evan-pc2, 2026-10-17)
+    $eapSetup = $ErrorActionPreference; $ErrorActionPreference = "Continue"
     try {
         if ($onWindows) {
             $ps = Join-Path $env:SystemRoot "System32\WindowsPowerShell\v1.0\powershell.exe"
@@ -205,9 +210,10 @@ if (Test-Path $cfgFile) {
             $pw = (Get-Process -Id $PID).Path
             $line = "*/5 * * * * '$pw' -NoProfile -File '$selfPath' -Dir '$Dir' -Watchdog >> '$Dir/watchdog.log' 2>&1"
             $cur = @(& crontab -l 2>$null)
-            if (-not ($cur -match "worker\.ps1' -Watchdog")) { (@($cur) + $line) -join "`n" | & crontab - }
+            if (-not ($cur -match "worker\.ps1' -Dir '.*' -Watchdog|worker\.ps1' -Watchdog")) { (@($cur) + $line) -join "`n" | & crontab - }
         }
-    } catch { }
+    } catch { Log "watchdog setup failed: $($_.Exception.Message)" }
+    $ErrorActionPreference = $eapSetup
 }
 
 function Download($url, $dest) {
