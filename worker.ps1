@@ -102,6 +102,22 @@ if ($Install) {
 $Server = $Server.TrimEnd("/")
 $headers = @{ Authorization = "Bearer $Token" }
 
+$script:LogFile = Join-Path $Dir "worker.log"
+function Log($m) {
+    $line = "{0} {1}" -f (Get-Date -Format "HH:mm:ss"), $m
+    Write-Host $line
+    try { Add-Content -Path $script:LogFile -Value $line } catch { }
+}
+# any unhandled error: record it, keep the window open (a shortcut-started window would otherwise vanish), then exit
+trap {
+    Log "FATAL: $($_.Exception.Message)"
+    Log "  at $($_.InvocationInfo.PositionMessage -replace '\s+', ' ')"
+    try { StopPool } catch { }
+    Write-Host "forge-worker stopped because of the error above; the watchdog will start it again within 5 minutes."
+    Start-Sleep 20
+    exit 1
+}
+
 # ---- deliberate stop, and the watchdog (v7, 2026-10-17) ----
 # A worker stopped on purpose (Ctrl+Q in its window, the "Stop Forge Worker" shortcut, or -Stop) leaves the marker file
 # stopped_by_user; anything else that ends it (a crash, closing the window with X) counts as a problem, and the watchdog
@@ -127,10 +143,10 @@ function KillTree($p) {
 function StartDetached {
     if ($onWindows) {
         Start-Process -FilePath (Join-Path $env:SystemRoot "System32\WindowsPowerShell\v1.0\powershell.exe") -WorkingDirectory $Dir `
-            -ArgumentList "-NoProfile -ExecutionPolicy Bypass -File `"$selfPath`""
+            -ArgumentList "-NoProfile -ExecutionPolicy Bypass -File `"$selfPath`" -Dir `"$Dir`""
     } else {
         $pw = (Get-Process -Id $PID).Path
-        & /bin/sh -c "cd '$Dir' && setsid nohup '$pw' -NoProfile -File '$selfPath' >> '$Dir/worker.log' 2>&1 < /dev/null &"
+        & /bin/sh -c "cd '$Dir' && setsid nohup '$pw' -NoProfile -File '$selfPath' -Dir '$Dir' > /dev/null 2>&1 < /dev/null &"
     }
 }
 function SendLogTail($why) {
@@ -168,39 +184,30 @@ if (Test-Path $cfgFile) {
     try {
         if ($onWindows) {
             $ps = Join-Path $env:SystemRoot "System32\WindowsPowerShell\v1.0\powershell.exe"
+            # the check runs through a tiny VBScript launcher: no console window flashes every 5 minutes (a hidden
+            # PowerShell still shows one briefly), and the task's command stays under Windows' 261-character limit
+            $vbs = Join-Path $Dir "watchdog.vbs"
+            Set-Content -Path $vbs -Encoding ASCII -Value ('CreateObject("WScript.Shell").Run "powershell.exe -NoProfile -ExecutionPolicy Bypass -File ""' +
+                $selfPath + '"" -Dir ""' + $Dir + '"" -Watchdog", 0, False')
             & schtasks /Query /TN "ForgeWorkerWatchdog" 2>&1 | Out-Null
             if ($LASTEXITCODE -ne 0) {
-                & schtasks /Create /F /SC MINUTE /MO 5 /TN "ForgeWorkerWatchdog" /TR "`"$ps`" -NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -File `"$selfPath`" -Watchdog" 2>&1 | Out-Null
+                & schtasks /Create /F /SC MINUTE /MO 5 /TN "ForgeWorkerWatchdog" /TR "wscript.exe `"$vbs`"" 2>&1 | Out-Null
+                if ($LASTEXITCODE -eq 0) { Log "watchdog installed: a check every 5 minutes (scheduled task ForgeWorkerWatchdog)" }
+                else { Log "could not install the watchdog task (schtasks exit $LASTEXITCODE): the worker runs without it" }
             }
             $slnk = Join-Path ([Environment]::GetFolderPath("Desktop")) "Stop Forge Worker.lnk"
             if (-not (Test-Path $slnk)) {
                 $sh = New-Object -ComObject WScript.Shell; $l = $sh.CreateShortcut($slnk)
-                $l.TargetPath = $ps; $l.Arguments = "-NoProfile -ExecutionPolicy Bypass -File `"$selfPath`" -Stop"
+                $l.TargetPath = $ps; $l.Arguments = "-NoProfile -ExecutionPolicy Bypass -File `"$selfPath`" -Dir `"$Dir`" -Stop"
                 $l.WorkingDirectory = $Dir; $l.Description = "Stop forge-worker on purpose (the watchdog then leaves it off)"; $l.Save()
             }
         } else {
             $pw = (Get-Process -Id $PID).Path
-            $line = "*/5 * * * * '$pw' -NoProfile -File '$selfPath' -Watchdog >> '$Dir/watchdog.log' 2>&1"
+            $line = "*/5 * * * * '$pw' -NoProfile -File '$selfPath' -Dir '$Dir' -Watchdog >> '$Dir/watchdog.log' 2>&1"
             $cur = @(& crontab -l 2>$null)
             if (-not ($cur -match "worker\.ps1' -Watchdog")) { (@($cur) + $line) -join "`n" | & crontab - }
         }
     } catch { }
-}
-
-$script:LogFile = Join-Path $Dir "worker.log"
-function Log($m) {
-    $line = "{0} {1}" -f (Get-Date -Format "HH:mm:ss"), $m
-    Write-Host $line
-    try { Add-Content -Path $script:LogFile -Value $line } catch { }
-}
-# any unhandled error: record it, keep the window open (a shortcut-started window would otherwise vanish), then exit
-trap {
-    Log "FATAL: $($_.Exception.Message)"
-    Log "  at $($_.InvocationInfo.PositionMessage -replace '\s+', ' ')"
-    try { StopPool } catch { }
-    Write-Host "forge-worker stopped because of the error above; the watchdog will start it again within 5 minutes."
-    Start-Sleep 20
-    exit 1
 }
 
 function Download($url, $dest) {
