@@ -250,6 +250,9 @@ if ($a === 'job') {
         $meta = $camps[$name];
         $meta['priority'] = $wts[$name]['priority'];
         if (!empty($meta['withdrawn'])) continue;
+        // meta "exclude": workers never offered this campaign (2026-10-17: harness canaries exclude the local jetson,
+        // which took all 36 canary games in seconds so no Windows PC ever got the 6 the gate needs)
+        if (in_array($worker, $meta['exclude'] ?? [], true)) continue;
         $per = intval($meta['per_slot'] ?? $PER_SLOT);
         $lease = intval($meta['lease_s'] ?? $LEASE);
         $st = $db->prepare("select gid from games where campaign=? and status='open' order by rowid limit ?");
