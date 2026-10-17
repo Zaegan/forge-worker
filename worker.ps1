@@ -26,10 +26,12 @@ param(
     [switch]$Install,                       # save -Server/-Token and put a "Forge Worker" shortcut on the Desktop
     [switch]$Uninstall,                     # remove the Desktop shortcut (downloads and settings are kept)
     [switch]$Update,                        # review and (after you confirm) install the newest worker.ps1; does not start work
+    [switch]$Stop,                          # stop the running worker on purpose (the "Stop Forge Worker" shortcut): the watchdog leaves it off
+    [switch]$Watchdog,                      # one check (run every 5 min by a scheduled task / cron): restart a crashed or stuck worker
     [int]$IdleWait = 20                     # seconds to wait before asking again when the server has no work
 )
 $Waiting = 2                                # games queued in each game worker beyond the one it is playing
-$ClientVersion = 6                          # the server can ask clients older than its minimum to update
+$ClientVersion = 7                          # the server can ask clients older than its minimum to update
 $ErrorActionPreference = "Stop"
 $ProgressPreference = "SilentlyContinue"   # Invoke-WebRequest's progress bar makes downloads very slow on PS 5.1
 [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
@@ -100,6 +102,91 @@ if ($Install) {
 $Server = $Server.TrimEnd("/")
 $headers = @{ Authorization = "Bearer $Token" }
 
+# ---- deliberate stop, and the watchdog (v7, 2026-10-17) ----
+# A worker stopped on purpose (Ctrl+Q in its window, the "Stop Forge Worker" shortcut, or -Stop) leaves the marker file
+# stopped_by_user; anything else that ends it (a crash, closing the window with X) counts as a problem, and the watchdog
+# starts it again. The watchdog is no resident process: a scheduled task (cron on Linux) runs "worker.ps1 -Watchdog"
+# every 5 minutes; each run checks, reports to the server, acts, and exits. It also restarts a worker the server
+# reports stuck (holding games, silent), first sending the end of its log, and never starts one stopped on purpose.
+$pidFile = Join-Path $Dir "worker.pid"
+$stopMark = Join-Path $Dir "stopped_by_user"
+$selfPath = Join-Path $Dir "worker.ps1"
+function WorkerPid {
+    if (-not (Test-Path $pidFile)) { return $null }
+    $p = [int](Get-Content $pidFile -Raw).Trim()
+    try {
+        $cmd = if ($onWindows) { (Get-CimInstance Win32_Process -Filter "ProcessId=$p").CommandLine } else { ([IO.File]::ReadAllText("/proc/$p/cmdline")) -replace "`0", " " }
+        if ($cmd -and $cmd -match "worker\.ps1" -and $cmd -notmatch "-Watchdog|-Stop|-Update") { return $p }
+    } catch { }
+    return $null
+}
+function KillTree($p) {
+    if ($onWindows) { & taskkill /PID $p /T /F 2>&1 | Out-Null }
+    else { $pg = ((Get-Content "/proc/$p/stat" -Raw) -split ' ')[4]; & /bin/sh -c "kill -TERM -$pg" 2>&1 | Out-Null }
+}
+function StartDetached {
+    if ($onWindows) {
+        Start-Process -FilePath (Join-Path $env:SystemRoot "System32\WindowsPowerShell\v1.0\powershell.exe") -WorkingDirectory $Dir `
+            -ArgumentList "-NoProfile -ExecutionPolicy Bypass -File `"$selfPath`""
+    } else {
+        $pw = (Get-Process -Id $PID).Path
+        & /bin/sh -c "cd '$Dir' && setsid nohup '$pw' -NoProfile -File '$selfPath' >> '$Dir/worker.log' 2>&1 < /dev/null &"
+    }
+}
+function SendLogTail($why) {
+    try {
+        $lf = Join-Path $Dir "worker.log"
+        $tail = if (Test-Path $lf) { (Get-Content $lf -Tail 150) -join "`n" } else { "(no log)" }
+        Invoke-RestMethod -Uri "$Server/api.php?a=logtail&why=$([uri]::EscapeDataString($why))" -Method Post -Headers $headers `
+            -Body ([Text.Encoding]::UTF8.GetBytes($tail)) -ContentType "text/plain; charset=utf-8" -TimeoutSec 60 | Out-Null
+    } catch { }
+}
+if ($Stop) {
+    Set-Content -Path $stopMark -Value (Get-Date -Format s)
+    $p = WorkerPid
+    if ($p) { Add-Content -Path (Join-Path $Dir "worker.log") -Value ("{0} stopped by user (Stop Forge Worker)" -f (Get-Date -Format "HH:mm:ss")); KillTree $p }
+    Write-Host "Forge Worker stopped. Start it again with the Forge Worker shortcut."
+    exit 0
+}
+if ($Watchdog) {
+    $p = WorkerPid
+    $state = if (Test-Path $stopMark) { "stopped_by_user" } elseif ($p) { "running" } else { "absent" }
+    $r = $null
+    try { $r = Invoke-RestMethod -Uri "$Server/api.php?a=ctl&state=$state&v=$ClientVersion" -Headers $headers -TimeoutSec 60 } catch { }
+    if ($state -eq "absent") { SendLogTail "watchdog: worker not running (not stopped by user): starting it"; StartDetached }
+    elseif ($state -eq "running" -and $r -and $r.restart) { SendLogTail "watchdog: restart requested ($($r.why))"; KillTree $p; Start-Sleep 5; StartDetached }
+    exit 0
+}
+
+# a normal start: this is the worker; a deliberate stop is cleared
+if (Test-Path $stopMark) { Remove-Item $stopMark -Force }
+Set-Content -Path $pidFile -Value $PID
+$WindowTitleText = "Forge Worker: Ctrl+Q to stop (closing this window restarts it)"
+try { $Host.UI.RawUI.WindowTitle = $WindowTitleText } catch { }
+# the watchdog, and the Stop shortcut: set up once, on installed machines (settings.json; not the jetson-local worker)
+if (Test-Path $cfgFile) {
+    try {
+        if ($onWindows) {
+            $ps = Join-Path $env:SystemRoot "System32\WindowsPowerShell\v1.0\powershell.exe"
+            & schtasks /Query /TN "ForgeWorkerWatchdog" 2>&1 | Out-Null
+            if ($LASTEXITCODE -ne 0) {
+                & schtasks /Create /F /SC MINUTE /MO 5 /TN "ForgeWorkerWatchdog" /TR "`"$ps`" -NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -File `"$selfPath`" -Watchdog" 2>&1 | Out-Null
+            }
+            $slnk = Join-Path ([Environment]::GetFolderPath("Desktop")) "Stop Forge Worker.lnk"
+            if (-not (Test-Path $slnk)) {
+                $sh = New-Object -ComObject WScript.Shell; $l = $sh.CreateShortcut($slnk)
+                $l.TargetPath = $ps; $l.Arguments = "-NoProfile -ExecutionPolicy Bypass -File `"$selfPath`" -Stop"
+                $l.WorkingDirectory = $Dir; $l.Description = "Stop forge-worker on purpose (the watchdog then leaves it off)"; $l.Save()
+            }
+        } else {
+            $pw = (Get-Process -Id $PID).Path
+            $line = "*/5 * * * * '$pw' -NoProfile -File '$selfPath' -Watchdog >> '$Dir/watchdog.log' 2>&1"
+            $cur = @(& crontab -l 2>$null)
+            if (-not ($cur -match "worker\.ps1' -Watchdog")) { (@($cur) + $line) -join "`n" | & crontab - }
+        }
+    } catch { }
+}
+
 $script:LogFile = Join-Path $Dir "worker.log"
 function Log($m) {
     $line = "{0} {1}" -f (Get-Date -Format "HH:mm:ss"), $m
@@ -111,7 +198,8 @@ trap {
     Log "FATAL: $($_.Exception.Message)"
     Log "  at $($_.InvocationInfo.PositionMessage -replace '\s+', ' ')"
     try { StopPool } catch { }
-    Read-Host "forge-worker stopped because of the error above. Press Enter to close"
+    Write-Host "forge-worker stopped because of the error above; the watchdog will start it again within 5 minutes."
+    Start-Sleep 20
     exit 1
 }
 
@@ -186,7 +274,9 @@ function Harness($commit) {
     $files = (Get-ChildItem $src -Filter *.java).FullName
     Log "compiling the harness ($commit)"
     $ct = Get-Date
-    & $javac -nowarn -encoding UTF-8 -d $classes -cp $jar $files 2>&1 | Where-Object { $_ -notmatch "^Note:" } | ForEach-Object { Log $_ }
+    $eap = $ErrorActionPreference; $ErrorActionPreference = "Continue"   # javac's notes on stderr are not errors
+    & $javac -nowarn -encoding UTF-8 -d $classes -cp $jar $files 2>&1 | ForEach-Object { "$_" } | Where-Object { $_ -notmatch "^Note:" } | ForEach-Object { Log $_ }
+    $ErrorActionPreference = $eap
     if (-not (Test-Path (Join-Path $classes "MatchWorker.class"))) { throw "harness did not compile" }
     Log ("harness compiled in {0:N0} s" -f ((Get-Date) - $ct).TotalSeconds)
     return $classes
@@ -358,6 +448,18 @@ function Finish($st, $played) {
 }
 
 while ($true) {
+    # Ctrl+Q in this window: a deliberate stop (games in progress go back to the server when their leases run out)
+    try {
+        while ([Console]::KeyAvailable) {
+            $k = [Console]::ReadKey($true)
+            if ($k.Key -eq [ConsoleKey]::Q -and ($k.Modifiers -band [ConsoleModifiers]::Control)) {
+                Set-Content -Path $stopMark -Value (Get-Date -Format s)
+                Log "stopped by user (Ctrl+Q)"
+                foreach ($w in $script:pool) { try { $w.P.Kill() } catch { } }
+                exit 0
+            }
+        }
+    } catch { }
     # fetch the next batch while the current one still has work queued (no idle gap between batches)
     if (-not $stop -and $queue.Count -lt $Threads -and (Get-Date) -ge $nextFetch -and -not ($Once -and $fetched -gt 0)) {
         $r = $null

@@ -198,6 +198,35 @@ function open_counts($db) {
 }
 
 $a = $_GET['a'] ?? '';
+
+// ---- the client watchdog (v7, 2026-10-17): a check every 5 min from each installed machine ----
+// a=ctl&state=running|absent|stopped_by_user: records the check-in (table worker_watchdog) and answers whether a restart
+// has been requested for this worker (DATA/ctl/<worker>.restart, written by iterate/queue_watchdog.py; consumed here).
+// a=logtail (POST, text): the end of the worker's log, sent before the watchdog restarts it; kept in DATA/ctl/.
+if ($a === 'ctl' || $a === 'logtail') {
+    @mkdir("$DATA/ctl", 0777, true);
+    $safe = preg_replace('/[^A-Za-z0-9_.-]/', '_', $worker);
+    if ($a === 'ctl') {
+        $db->exec('create table if not exists worker_watchdog (worker text primary key, seen real, state text, version int)');
+        $st = $db->prepare('insert or replace into worker_watchdog values (?, ?, ?, ?)');
+        $st->bindValue(1, $worker); $st->bindValue(2, microtime(true));
+        $st->bindValue(3, substr((string)($_GET['state'] ?? ''), 0, 32)); $st->bindValue(4, intval($_GET['v'] ?? 0));
+        $st->execute();
+        $rf = "$DATA/ctl/$safe.restart";
+        if (file_exists($rf)) {
+            $why = trim((string)@file_get_contents($rf));
+            @rename($rf, "$DATA/ctl/$safe.restart." . date('Ymd-His') . '.done');
+            out(200, ['restart' => true, 'why' => $why]);
+        }
+        out(200, ['restart' => false]);
+    }
+    $body = substr((string)file_get_contents('php://input'), -200000);
+    $why = substr((string)($_GET['why'] ?? ''), 0, 300);
+    $f = "$DATA/ctl/$safe-" . date('Ymd-His') . '.log';
+    file_put_contents($f, "# $why\n" . $body);
+    @chmod($f, 0644);
+    out(200, ['stored' => basename($f)]);
+}
 if ($a === 'job') {
     if (intval($_GET['v'] ?? 0) < $MIN_CLIENT) out(426, ['error' => 'please update forge-worker']);
     $slots = max(1, min(64, intval($_GET['slots'] ?? 1)));
