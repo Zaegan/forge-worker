@@ -77,8 +77,9 @@ public class MatchGames {
 
         final Game game;
         final long cap;
-        long phases, creatures, abilities, events;
-        boolean capped;
+        volatile long phases, creatures, abilities, events;
+        volatile boolean capped;
+        volatile Thread owner;   // the game's own thread: the first to send GameEventGameStarted
 
         WorkMeter(Game game, long cap) {
             this.game = game;
@@ -87,9 +88,17 @@ public class MatchGames {
 
         long work() { return phases + WC * creatures + WA * abilities; }
 
+        /**
+         * Never takes the game's lock, and counts only the game thread's events (2026-10-17: Forge's "Game AI Eval" thread
+         * posts events -- mana payments it tries out -- while the game thread holds the game's lock and posts to us; with
+         * Guava's per-subscriber lock and game.isGameOver() (synchronized) here, the two deadlocked, and each such game
+         * worker stopped for good: evan-pc2 played nothing from before 02:00 to 08:17).
+         */
         @com.google.common.eventbus.Subscribe
+        @com.google.common.eventbus.AllowConcurrentEvents
         public void event(forge.game.event.Event e) {
-            if (capped || game.isGameOver()) return;
+            if (owner == null && e instanceof forge.game.event.GameEventGameStarted) owner = Thread.currentThread();
+            if (capped || Thread.currentThread() != owner) return;
             events++;
             if (!(e instanceof forge.game.event.GameEventTurnPhase)) return;
             phases++;
@@ -315,7 +324,7 @@ public class MatchGames {
             }, "forge-game");
             t.setDaemon(true);
             java.lang.management.ThreadMXBean mx = java.lang.management.ManagementFactory.getThreadMXBean();
-            long cpuLimit = Math.max(120, timeout) * 1_000_000_000L, wallLimit = 30L * 60 * 1_000_000_000L;
+            long cpuLimit = Math.max(120, timeout) * 1_000_000_000L, wallLimit = 10L * 60 * 1_000_000_000L;   // 10 min: only blocked games get here (busy ones hit the CPU limit)
             t.start();
             try {
                 while (t.isAlive()) {
@@ -326,8 +335,14 @@ public class MatchGames {
                 }
             } catch (InterruptedException ie) { Thread.currentThread().interrupt(); }
             if (t.isAlive()) {
-                game.setGameOver(GameEndReason.Draw);
-                end = "timeout";
+                // a hung game: touch nothing that takes the game's lock (its thread may hold it forever); report a
+                // minimal draw and let MatchWorker exit, which ends the stuck threads
+                return "{\"a\":" + ToyGames.q(nameA) + ",\"b\":" + ToyGames.q(nameB) + ",\"game\":" + g + ",\"winner\":\"\",\"first\":\"\""
+                        + ",\"end\":\"timeout\",\"turns\":-1,\"ms\":" + (System.nanoTime() - t0) / 1_000_000 + ",\"cpu_ms\":" + cpuMs
+                        + ",\"work\":" + work.json() + ",\"game_seed\":" + gameSeed + ",\"life\":{},\"mulligans\":{}"
+                        + ",\"library\":{" + ToyGames.q(nameA) + ":{\"depth\":0,\"disturbed\":true,\"technique_bottomed\":0}," + ToyGames.q(nameB)
+                        + ":{\"depth\":0,\"disturbed\":true,\"technique_bottomed\":0}},\"searched\":{},\"deployed\":{}"
+                        + ",\"cards\":{" + ToyGames.q(nameA) + ":[]," + ToyGames.q(nameB) + ":[]},\"hung\":true}";
             } else if (err[0] != null) {
                 game.setGameOver(GameEndReason.Draw);
                 end = "error:" + err[0].getClass().getSimpleName();
