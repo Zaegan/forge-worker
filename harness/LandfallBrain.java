@@ -494,9 +494,41 @@ public class LandfallBrain {
         return null;
     }
 
+    /**
+     * landseq6 (2026-10-23, from pilot/reports/lf-landseq5-10-score-v2.md, fetch_basic x4): when Forge plays a basic land
+     * while a landfall payoff is on our battlefield (Chocobo, Harmonizer, Nursery, Earthbender Ascension) and a fetch
+     * can be played (hand, or graveyard with Icetill Explorer), play the fetch: two landfalls instead of one. Unless the
+     * basic's mana is needed this turn: a spell in hand costs exactly one more than our untapped sources, and the fetch
+     * gives no mana now (Fabled Passage's land enters untapped once we control 4+ lands).
+     */
+    static SpellAbility fetchOverBasic(Player me, SpellAbility pick) {
+        Card b = pick.getHostCard();
+        if (!pick.isLandAbility() || b == null || !b.getType().isBasic()) return null;
+        boolean payoff = false;
+        for (Card c : me.getCardsIn(ZoneType.Battlefield))
+            if (named(c, CHOCOBO) || named(c, HARMONIZER) || named(c, "Sapling Nursery") || named(c, "Earthbender Ascension")) payoff = true;
+        if (!payoff) return null;
+        SpellAbility f = landPlay(me, true);
+        if (f == null) return null;
+        int src = untappedSources(me);
+        int lands = 0;
+        for (Card c : me.getCardsIn(ZoneType.Battlefield)) if (c.isLand()) lands++;
+        boolean fetchGivesMana = named(f.getHostCard(), PASSAGE) && lands >= 3;
+        boolean need = false;
+        for (Card c : me.getCardsIn(ZoneType.Hand)) {
+            if (c.isLand()) continue;
+            int cost = named(c, HARMONIZER) ? Math.min(3, c.getCMC()) : c.getCMC();
+            if (cost == src + 1) need = true;
+        }
+        if (need && !fetchGivesMana) { ControlBrain.count("landseq6_basic_kept_for_mana"); return null; }
+        ControlBrain.count("landseq6_fetch_over_basic");
+        return f;
+    }
+
     static List<SpellAbility> seq2(Player me, List<SpellAbility> ai) {
         Game g = me.getGame();
-        boolean v5 = AiTweaks.on("landseq5", me);
+        boolean v6 = AiTweaks.on("landseq6", me);
+        boolean v5 = v6 || AiTweaks.on("landseq5", me);
         boolean v4 = v5 || AiTweaks.on("landseq4", me);
         boolean v3 = v4 || AiTweaks.on("landseq3", me);
         if (v3) { List<SpellAbility> l = lethalStep(me, ai); if (l != ai) return l; }
@@ -518,6 +550,7 @@ public class LandfallBrain {
         if (pick != null && makesLandfall2(pick)) {                                   // A
             SpellAbility p = payoffFirst(me, ph, v3);
             if (p != null) return List.of(p);
+            if (v6) { SpellAbility f = fetchOverBasic(me, pick); if (f != null) return List.of(f); }
             // landseq4 P1: Earthbender Ascension before the turn's other landfalls (its quest counters count them)
             if (v4 && ph == PhaseType.MAIN1 && !(pick.isSpell() && named(pick.getHostCard(), "Earthbender Ascension")))
                 for (SpellAbility sa : castable(me, ZoneType.Hand, "Earthbender Ascension")) {
@@ -561,7 +594,9 @@ public class LandfallBrain {
     }
 
     /**
-     * landseq5@NAME (2026-10-23, A/B of the recurring judgement call in pilot/reports/lf-landseq4-10-report.md): landseq4, plus
+     * landseq6@NAME — landseq5 + a fetch instead of a basic when a payoff is on board (fetchOverBasic).
+ *
+ * landseq5@NAME (2026-10-23, A/B of the recurring judgement call in pilot/reports/lf-landseq4-10-report.md): landseq4, plus
  *  when Forge would activate Ba Sing Se's earthbend, cast our most expensive castable permanent spell from hand instead
  *  (creatures, Lumbering Worldwagon; not by warp). The earthbend can still follow if mana is left.
  *
