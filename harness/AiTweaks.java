@@ -58,6 +58,7 @@ import java.util.List;
  * exact optimal strategy for the 10-criteria hand score, goldfish/mull_opt.py).
  *
  * landfall — LandfallBrain's Escape Tunnel + Mightform Harmonizer kill for Mono-Green Landfall.
+ * landseq@NAME — LandfallBrain.seq: cast a castable landfall payoff before the landfall Forge chose (2026-10-23).
  *
  * ooze — with protect: Ferocity of the Hunt is held (no end-of-turn cast) for removal on a non-indestructible creature
  * (Ooze's partners: Beorn, Zookeeper, ...) or for Predator Ooze in a combat its power cannot win (ProtectBrain).
@@ -237,6 +238,7 @@ public class AiTweaks {
             List<SpellAbility> ai = aiChoose();
             ai = TWEAKS.contains("leyline") ? LeylineBrain.post(getPlayer(), ai) : ai;
             ai = ProwessBrain.ON(getPlayer()) ? ProwessBrain.post(getPlayer(), ai) : ai;
+            ai = on("landseq", getPlayer()) ? LandfallBrain.seq(getPlayer(), ai) : ai;
             if (on("edgargrow", getPlayer()) && ai != null && !ai.isEmpty() && holdForEdgar(getPlayer(), ai.get(0))) {
                 ControlBrain.count("edgargrow_pass");
                 return null;

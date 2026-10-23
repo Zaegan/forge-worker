@@ -1,4 +1,8 @@
 import forge.ai.ComputerUtil;
+import forge.ai.ComputerUtilAbility;
+import forge.ai.ComputerUtilCost;
+import forge.game.ability.ApiType;
+import forge.game.card.CardCollection;
 import forge.game.Game;
 import forge.game.card.Card;
 import forge.game.combat.CombatUtil;
@@ -159,6 +163,52 @@ public class LandfallBrain {
     }
 
     /** From chooseSpellAbilityToPlay: activate the Tunnel's unblockable mode for a planned (or newly found) stroke. */
+    /**
+     * landseq@NAME (2026-10-23, meta pilots: the agents' Mono-Green Landfall wins came from casting the landfall payoffs
+     * BEFORE the turn's landfalls; Forge plays its land first): in our main 1 with an empty stack, when Forge's choice
+     * makes a landfall (a land play, Fabled Passage / Escape Tunnel cracked for a land, Shared Roots, Earthbender
+     * Ascension) and a landfall payoff in hand can be cast now, cast the payoff first (Mightform Harmonizer, Icetill
+     * Explorer, Sapling Nursery, Sazh's Chocobo, in that order; the normal cost before warp). The landfall itself is
+     * then Forge's next choice.
+     */
+    static final String[] PAYOFFS = {HARMONIZER, EXPLORER, "Sapling Nursery", CHOCOBO};
+
+    static boolean makesLandfall(SpellAbility sa) {
+        if (sa.isLandAbility()) return true;
+        Card h = sa.getHostCard();
+        if (h == null) return false;
+        String n = h.getName();
+        if ((n.equals(PASSAGE) || n.equals(TUNNEL)) && sa.getApi() == ApiType.ChangeZone) return true;
+        return sa.isSpell() && (n.equals("Shared Roots") || n.equals("Earthbender Ascension"));
+    }
+
+    static List<SpellAbility> seq(Player me, List<SpellAbility> ai) {
+        if (ai == null || ai.isEmpty()) return ai;
+        Game g = me.getGame();
+        if (!g.getPhaseHandler().isPlayerTurn(me) || g.getPhaseHandler().getPhase() != PhaseType.MAIN1 || !g.getStack().isEmpty()) return ai;
+        if (!makesLandfall(ai.get(0))) return ai;
+        for (String p : PAYOFFS) {
+            CardCollection hand = new CardCollection();
+            for (Card c : me.getCardsIn(ZoneType.Hand)) if (named(c, p)) { hand.add(c); break; }
+            if (hand.isEmpty()) continue;
+            SpellAbility warp = null;
+            for (SpellAbility sa : ComputerUtilAbility.getSpellAbilities(hand, me)) {
+                if (!sa.isSpell()) continue;
+                sa.setActivatingPlayer(me);
+                try {
+                    if (!sa.canPlay() || !ComputerUtilCost.canPayCost(sa, me, false)) continue;
+                } catch (Exception e) {
+                    continue;
+                }
+                if ((sa.getDescription() + " " + sa).toLowerCase().contains("warp")) { if (warp == null) warp = sa; continue; }
+                ControlBrain.count("landseq_payoff_first");
+                return List.of(sa);
+            }
+            if (warp != null) { ControlBrain.count("landseq_payoff_first_warp"); return List.of(warp); }
+        }
+        return ai;
+    }
+
     static SpellAbility choose(Player me) {
         ControlBrain.count("choose_called");
         if (!window(me)) return null;
