@@ -501,12 +501,13 @@ public class LandfallBrain {
      * basic's mana is needed this turn: a spell in hand costs exactly one more than our untapped sources, and the fetch
      * gives no mana now (Fabled Passage's land enters untapped once we control 4+ lands).
      */
-    static SpellAbility fetchOverBasic(Player me, SpellAbility pick) {
+    static SpellAbility fetchOverBasic(Player me, SpellAbility pick, boolean v7) {
         Card b = pick.getHostCard();
         if (!pick.isLandAbility() || b == null || !b.getType().isBasic()) return null;
         boolean payoff = false;
         for (Card c : me.getCardsIn(ZoneType.Battlefield))
-            if (named(c, CHOCOBO) || named(c, HARMONIZER) || named(c, "Sapling Nursery") || named(c, "Earthbender Ascension")) payoff = true;
+            if (named(c, CHOCOBO) || named(c, "Sapling Nursery") || named(c, "Earthbender Ascension")
+                    || (named(c, HARMONIZER) && (!v7 || attackerWithPower(me)))) payoff = true;   // landseq7: a doubling must have an attacker
         if (!payoff) return null;
         SpellAbility f = landPlay(me, true);
         if (f == null) return null;
@@ -527,7 +528,8 @@ public class LandfallBrain {
 
     static List<SpellAbility> seq2(Player me, List<SpellAbility> ai) {
         Game g = me.getGame();
-        boolean v6 = AiTweaks.on("landseq6", me);
+        boolean v7 = AiTweaks.on("landseq7", me);
+        boolean v6 = v7 || AiTweaks.on("landseq6", me);
         boolean v5 = v6 || AiTweaks.on("landseq5", me);
         boolean v4 = v5 || AiTweaks.on("landseq4", me);
         boolean v3 = v4 || AiTweaks.on("landseq3", me);
@@ -550,13 +552,14 @@ public class LandfallBrain {
         if (pick != null && makesLandfall2(pick)) {                                   // A
             SpellAbility p = payoffFirst(me, ph, v3);
             if (p != null) return List.of(p);
-            if (v6) { SpellAbility f = fetchOverBasic(me, pick); if (f != null) return List.of(f); }
+            if (v6 && !v7) { SpellAbility f = fetchOverBasic(me, pick, false); if (f != null) return List.of(f); }
             // landseq4 P1: Earthbender Ascension before the turn's other landfalls (its quest counters count them)
             if (v4 && ph == PhaseType.MAIN1 && !(pick.isSpell() && named(pick.getHostCard(), "Earthbender Ascension")))
                 for (SpellAbility sa : castable(me, ZoneType.Hand, "Earthbender Ascension")) {
                     ControlBrain.count("landseq4_ascension_first");
                     return List.of(sa);
                 }
+            if (v7) { SpellAbility f = fetchOverBasic(me, pick, true); if (f != null) return List.of(f); }   // landseq7: after Ascension
             return ai;
         }
         if (pick != null && pick.isSpell() && pick.getHostCard() != null && named(pick.getHostCard(), HARMONIZER) && isWarp(pick)) {   // B
@@ -594,7 +597,9 @@ public class LandfallBrain {
     }
 
     /**
-     * landseq6@NAME — landseq5 + a fetch instead of a basic when a payoff is on board (fetchOverBasic).
+     * landseq7@NAME — landseq6 with its two clear misfires fixed (seeds 517, 1148): the fetch rule runs after Ascension-first, and
+ *  a Harmonizer counts as a payoff only if a creature that can attack this turn would get the doubling.
+ * landseq6@NAME — landseq5 + a fetch instead of a basic when a payoff is on board (fetchOverBasic).
  *
  * landseq5@NAME (2026-10-23, A/B of the recurring judgement call in pilot/reports/lf-landseq4-10-report.md): landseq4, plus
  *  when Forge would activate Ba Sing Se's earthbend, cast our most expensive castable permanent spell from hand instead

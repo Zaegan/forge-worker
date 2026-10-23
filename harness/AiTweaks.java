@@ -60,6 +60,7 @@ import java.util.List;
  * landfall — LandfallBrain's Escape Tunnel + Mightform Harmonizer kill for Mono-Green Landfall.
  * lftrace@NAME — LandfallBrain.trace: state snapshots at our main-phase decisions (for agent scoring), changes nothing.
  * lfaudit@NAME — LandfallBrain.audit: counts Landfall misplays (mis_*), changes nothing.
+ * landseq7@NAME — landseq6 with the fetch rule after Ascension-first and no fetch for an attacker-less Harmonizer.
  * landseq6@NAME — landseq5 + a fetch instead of a basic when a payoff is on board.
  * landseq5@NAME — landseq4 + permanent spells before Ba Sing Se's earthbend.
  * landseq4@NAME — landseq3 + Earthbender Ascension before the other landfalls; payoffs before part C.
@@ -246,7 +247,7 @@ public class AiTweaks {
             ai = TWEAKS.contains("leyline") ? LeylineBrain.post(getPlayer(), ai) : ai;
             ai = ProwessBrain.ON(getPlayer()) ? ProwessBrain.post(getPlayer(), ai) : ai;
             ai = on("landseq", getPlayer()) ? LandfallBrain.seq(getPlayer(), ai) : ai;
-            ai = on("landseq2", getPlayer()) || on("landseq3", getPlayer()) || on("landseq4", getPlayer()) || on("landseq5", getPlayer()) || on("landseq6", getPlayer()) ? LandfallBrain.seq2(getPlayer(), ai) : ai;
+            ai = on("landseq2", getPlayer()) || on("landseq3", getPlayer()) || on("landseq4", getPlayer()) || on("landseq5", getPlayer()) || on("landseq6", getPlayer()) || on("landseq7", getPlayer()) ? LandfallBrain.seq2(getPlayer(), ai) : ai;
             if (on("edgargrow", getPlayer()) && ai != null && !ai.isEmpty() && holdForEdgar(getPlayer(), ai.get(0))) {
                 ControlBrain.count("edgargrow_pass");
                 return null;
@@ -295,7 +296,7 @@ public class AiTweaks {
                     return r;
                 }
             }
-            if (on("landseq3", getPlayer()) || on("landseq4", getPlayer()) || on("landseq5", getPlayer()) || on("landseq6", getPlayer())) {
+            if (on("landseq3", getPlayer()) || on("landseq4", getPlayer()) || on("landseq5", getPlayer()) || on("landseq6", getPlayer()) || on("landseq7", getPlayer())) {
                 Boolean r3 = LandfallBrain.playTrigger3(getPlayer(), wa);
                 if (r3 != null) return r3;
             }
@@ -335,7 +336,7 @@ public class AiTweaks {
             if (TWEAKS.contains("protect")) ProtectBrain.holdTamBack(getPlayer(), combat);
             if (TWEAKS.contains("leyline")) LeylineBrain.forceAttack(getPlayer(), combat);
             if (ProwessBrain.ON(getPlayer())) ProwessBrain.forceAttack(getPlayer(), combat);
-            if (on("landseq3", getPlayer()) || on("landseq4", getPlayer()) || on("landseq5", getPlayer()) || on("landseq6", getPlayer())) LandfallBrain.attack3(getPlayer(), combat);
+            if (on("landseq3", getPlayer()) || on("landseq4", getPlayer()) || on("landseq5", getPlayer()) || on("landseq6", getPlayer()) || on("landseq7", getPlayer())) LandfallBrain.attack3(getPlayer(), combat);
             if (on("lftrace", getPlayer())) LandfallBrain.traceCombat(getPlayer(), "ATTACK", combat);
         }
 
