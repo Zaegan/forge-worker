@@ -362,6 +362,9 @@ public class LandfallBrain {
                 for (forge.game.keyword.Keyword k : KW) if (c.hasKeyword(k)) x.append(' ').append(k.toString().toLowerCase());
                 if (active && c.isSick() && !c.hasKeyword(forge.game.keyword.Keyword.HASTE)) x.append(" sick");
             }
+            if (!c.isCreature() && c.hasCounters())   // e.g. Earthbender Ascension's quest counters (2026-10-23)
+                for (forge.game.card.CounterType ct : c.getCounters().elementSet())
+                    x.append(' ').append(c.getCounters(ct)).append(' ').append(ct.toString().toLowerCase());
             if (c.isTapped()) x.append(" tapped");
             b.add(x.toString());
         }
