@@ -496,13 +496,25 @@ public class LandfallBrain {
 
     static List<SpellAbility> seq2(Player me, List<SpellAbility> ai) {
         Game g = me.getGame();
-        boolean v4 = AiTweaks.on("landseq4", me);
+        boolean v5 = AiTweaks.on("landseq5", me);
+        boolean v4 = v5 || AiTweaks.on("landseq4", me);
         boolean v3 = v4 || AiTweaks.on("landseq3", me);
         if (v3) { List<SpellAbility> l = lethalStep(me, ai); if (l != ai) return l; }
         if (!g.getPhaseHandler().isPlayerTurn(me) || !g.getStack().isEmpty()) return ai;
         PhaseType ph = g.getPhaseHandler().getPhase();
         if (ph != PhaseType.MAIN1 && ph != PhaseType.MAIN2) return ai;
         SpellAbility pick = ai == null || ai.isEmpty() ? null : ai.get(0);
+        if (v5 && pick != null && !pick.isSpell() && pick.getHostCard() != null && named(pick.getHostCard(), "Ba Sing Se")
+                && !pick.isManaAbility()) {                                                 // landseq5: spells before Ba Sing Se
+            SpellAbility best = null;
+            for (SpellAbility sa : castable(me, ZoneType.Hand, null)) {
+                Card h = sa.getHostCard();
+                if (h.isLand() || isWarp(sa)) continue;
+                if (!(h.isCreature() || h.isArtifact() || h.isEnchantment())) continue;   // permanents (Worldwagon, creatures)
+                if (best == null || h.getCMC() > best.getHostCard().getCMC()) best = sa;
+            }
+            if (best != null) { ControlBrain.count("landseq5_spell_before_basingse"); return List.of(best); }
+        }
         if (pick != null && makesLandfall2(pick)) {                                   // A
             SpellAbility p = payoffFirst(me, ph, v3);
             if (p != null) return List.of(p);
@@ -549,7 +561,11 @@ public class LandfallBrain {
     }
 
     /**
-     * landseq4@NAME (2026-10-23, from pilot/reports/lf-landseq3-10-report.md): landseq3, plus Earthbender Ascension cast
+     * landseq5@NAME (2026-10-23, A/B of the recurring judgement call in pilot/reports/lf-landseq4-10-report.md): landseq4, plus
+ *  when Forge would activate Ba Sing Se's earthbend, cast our most expensive castable permanent spell from hand instead
+ *  (creatures, Lumbering Worldwagon; not by warp). The earthbend can still follow if mana is left.
+ *
+ * landseq4@NAME (2026-10-23, from pilot/reports/lf-landseq3-10-report.md): landseq3, plus Earthbender Ascension cast
  *  before the turn's other landfalls (after the payoffs), and payoffs first also before part C's landfall spell.
  *
  * landseq3@NAME (2026-10-23, from pilot/reports/lf-landseq2-report.md): landseq2, plus
