@@ -14,8 +14,8 @@
 //   GET  api.php?a=withdrawn       campaigns withdrawn by the orchestrator (workers drop their unstarted games)
 //   POST api.php?a=release&job=ID&harness=H   body: why (text). A job the client could not play (its harness did not
 //        compile there, GitHub unreachable, ...): its games go back to the pool at once, and the failure is recorded
-//        (table harness_fail). Campaigns on harness H are then not offered to this worker until it restarts (the job
-//        request's "started" is later than the failure), so it gets other work. v9+ clients (2026-10-23).
+//        (table harness_fail). Campaigns on harness H are then not offered to this worker for $FAIL_RETRY s, or until
+//        it restarts (the job request's "started" is later than the failure), so it gets other work. v9+ clients.
 //   GET  api.php?a=status
 // DATA/workers.json {"<worker name>": {"threads": N}} sets a machine's game-worker count (sent with each job; the
 // client never exceeds its own limit of logical CPUs - 2).
@@ -24,7 +24,8 @@ umask(0);
 $DATA = getenv('FORGE_DATA') ?: realpath(__DIR__ . '/../../uploads') . '/forge';
 $LEASE = 1800;
 $PER_SLOT = 25;
-$MIN_CLIENT = 0;   // raise to make older workers stop and ask their owner to run "Update Forge Worker"
+$MIN_CLIENT = 0;
+$FAIL_RETRY = 1800;   // a harness a worker could not play is retried on it after this long (a=release)   // raise to make older workers stop and ask their owner to run "Update Forge Worker"
 
 function out($code, $obj = null) {
     http_response_code($code);
@@ -245,8 +246,10 @@ if ($a === 'job') {
     $SLOTS = $slots;
     $CLIENT_V = intval($_GET['v'] ?? 0);
     [$order, $fresh] = dwell_filter($db, $worker, $camps, order_campaigns($camps, $wts, $OPEN), $now);
-    // harnesses this worker reported it cannot play since it last started (a=release): not offered again
-    $started = floatval($_GET['started'] ?? 0);
+    // harnesses this worker reported it cannot play (a=release) since it last started AND within the last
+    // $FAIL_RETRY seconds: not offered. After that it is offered again, so a machine whose cause went away (2026-10-23:
+    // Malwarebytes released the quarantined javac.exe) recovers by itself; a retry that still fails costs one handed-back job
+    $started = max(floatval($_GET['started'] ?? 0), $now - $FAIL_RETRY);
     $failed = [];
     $hf = $db->prepare('select harness from harness_fail where worker=? and at > ?');
     $hf->bindValue(1, $worker); $hf->bindValue(2, $started);
