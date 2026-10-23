@@ -58,6 +58,9 @@ import java.util.List;
  * exact optimal strategy for the 10-criteria hand score, goldfish/mull_opt.py).
  *
  * landfall — LandfallBrain's Escape Tunnel + Mightform Harmonizer kill for Mono-Green Landfall.
+ * lftrace@NAME — LandfallBrain.trace: state snapshots at our main-phase decisions (for agent scoring), changes nothing.
+ * lfaudit@NAME — LandfallBrain.audit: counts Landfall misplays (mis_*), changes nothing.
+ * landseq2@NAME — LandfallBrain.seq2: payoffs first (also from exile), no idle warp, landfall spells before combat, Esper Origins.
  * landseq@NAME — LandfallBrain.seq: cast a castable landfall payoff before the landfall Forge chose (2026-10-23).
  *
  * ooze — with protect: Ferocity of the Hunt is held (no end-of-turn cast) for removal on a non-indestructible creature
@@ -239,6 +242,7 @@ public class AiTweaks {
             ai = TWEAKS.contains("leyline") ? LeylineBrain.post(getPlayer(), ai) : ai;
             ai = ProwessBrain.ON(getPlayer()) ? ProwessBrain.post(getPlayer(), ai) : ai;
             ai = on("landseq", getPlayer()) ? LandfallBrain.seq(getPlayer(), ai) : ai;
+            ai = on("landseq2", getPlayer()) ? LandfallBrain.seq2(getPlayer(), ai) : ai;
             if (on("edgargrow", getPlayer()) && ai != null && !ai.isEmpty() && holdForEdgar(getPlayer(), ai.get(0))) {
                 ControlBrain.count("edgargrow_pass");
                 return null;
@@ -249,7 +253,9 @@ public class AiTweaks {
                 ControlBrain.count("dwarvesetb2_hold");
                 return null;
             }
-            return spendIfIdle(getPlayer(), ai);
+            ai = spendIfIdle(getPlayer(), ai);
+            if (on("lftrace", getPlayer())) LandfallBrain.trace(getPlayer(), ai);
+            return on("lfaudit", getPlayer()) ? LandfallBrain.audit(getPlayer(), ai) : ai;
         }
 
         /** Forge's own choice. With the simulation AI on (simdeck), a failure inside its game copier (Forge 2.0.15:
@@ -280,10 +286,14 @@ public class AiTweaks {
         public boolean playTrigger(Card host, forge.game.trigger.WrappedAbility wa, boolean isMandatory) {
             if (TWEAKS.contains("landfall")) {
                 Boolean r = LandfallBrain.playTrigger(getPlayer(), wa);
-                if (r != null) return r;
+                if (r != null) {
+                    if (r && on("lfaudit", getPlayer())) LandfallBrain.auditTrigger(getPlayer(), wa);
+                    return r;
+                }
             }
             boolean play = super.playTrigger(host, wa, isMandatory);
             if (play && on("lordtarget", getPlayer())) lordRetarget(getPlayer(), wa);
+            if (play && on("lfaudit", getPlayer())) LandfallBrain.auditTrigger(getPlayer(), wa);
             return play;
         }
 
@@ -317,6 +327,13 @@ public class AiTweaks {
             if (TWEAKS.contains("protect")) ProtectBrain.holdTamBack(getPlayer(), combat);
             if (TWEAKS.contains("leyline")) LeylineBrain.forceAttack(getPlayer(), combat);
             if (ProwessBrain.ON(getPlayer())) ProwessBrain.forceAttack(getPlayer(), combat);
+            if (on("lftrace", getPlayer())) LandfallBrain.traceCombat(getPlayer(), "ATTACK", combat);
+        }
+
+        @Override
+        public void declareBlockers(Player defender, forge.game.combat.Combat combat) {
+            super.declareBlockers(defender, combat);
+            if (on("lftrace", getPlayer())) LandfallBrain.traceCombat(getPlayer(), "BLOCK", combat);
         }
 
         @Override

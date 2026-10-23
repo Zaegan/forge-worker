@@ -209,6 +209,304 @@ public class LandfallBrain {
         return ai;
     }
 
+    /**
+     * lfaudit@NAME (2026-10-23, user: minimise the share of games with unambiguous misplays): counts, without changing
+     * any decision, the Landfall misplays below as ControlBrain counters "mis_*" (in the game's JSON).
+     *  mis_land_unplayed   our turn ended with a land in hand and a land drop unused;
+     *  mis_payoff_late     a landfall made in main 1 while a landfall payoff in hand was castable (cast it first);
+     *  mis_landfall_post   a landfall made in main 2 while Mightform Harmonizer had been on the battlefield all turn
+     *                      and one of our creatures attacked (its doubling came after the damage);
+     *  mis_harm_target     before attacks, a Harmonizer doubling aimed at a creature that cannot attack this turn or
+     *                      has no power, while one with power that can attack was available.
+     */
+    static int auditTurn = -1; static Game auditGame;
+
+    static boolean canAttackThisTurn(Card c) {
+        return c.isUntapped() && (!c.isSick() || c.hasKeyword(forge.game.keyword.Keyword.HASTE)) && CombatUtil.canAttack(c);
+    }
+
+    /** audit only (no AI calls: they can change the game): a payoff in hand whose mana value (Harmonizer: its warp
+     *  cost, 3) is at most our untapped mana sources -- lands and creatures with a mana ability that can tap */
+    static boolean payoffAffordable(Player me) {
+        int mana = 0;
+        for (Card c : me.getCardsIn(ZoneType.Battlefield))
+            if (c.isUntapped() && !c.getManaAbilities().isEmpty() && (c.isLand() || !c.isSick())) mana++;
+        for (Card c : me.getCardsIn(ZoneType.Hand)) {
+            boolean pay = false;
+            for (String p : PAYOFFS) if (named(c, p)) pay = true;
+            if (!pay) continue;
+            int cost = named(c, HARMONIZER) ? 3 : named(c, "Sapling Nursery") ? Math.max(2, c.getCMC() - forests(me)) : c.getCMC();
+            if (cost <= mana) return true;
+        }
+        return false;
+    }
+
+    static int forests(Player me) {
+        int n = 0;
+        for (Card c : me.getCardsIn(ZoneType.Battlefield)) if (c.getType().hasSubtype("Forest")) n++;
+        return n;
+    }
+
+    static List<SpellAbility> audit(Player me, List<SpellAbility> ai) {
+        Game g = me.getGame();
+        if (!g.getPhaseHandler().isPlayerTurn(me)) return ai;
+        PhaseType ph = g.getPhaseHandler().getPhase();
+        int turn = g.getPhaseHandler().getTurn();
+        boolean empty = g.getStack().isEmpty();
+        SpellAbility pick = ai == null || ai.isEmpty() ? null : ai.get(0);
+        if (pick != null && empty && makesLandfall(pick)) {
+            if (ph == PhaseType.MAIN1 && payoffAffordable(me)) ControlBrain.count("mis_payoff_late");
+            if (ph == PhaseType.MAIN2) {
+                boolean harm = false, attacked = false;
+                for (Card c : me.getCreaturesInPlay()) {
+                    if (named(c, HARMONIZER) && c.getTurnInZone() < turn) harm = true;
+                    if (c.getDamageHistory().getCreatureAttacksThisTurn() > 0) attacked = true;
+                }
+                if (harm && attacked) ControlBrain.count("mis_landfall_post");
+            }
+        }
+        if (pick == null && empty && (ph == PhaseType.MAIN2 || ph == PhaseType.END_OF_TURN) && (auditGame != g || auditTurn != turn)
+                && !me.getMaxLandPlaysInfinite() && me.getLandsPlayedThisTurn() < me.getMaxLandPlays()) {
+            for (Card c : me.getCardsIn(ZoneType.Hand))
+                if (c.isLand()) {
+                    {
+                        ControlBrain.count("mis_land_unplayed");
+                        auditGame = g; auditTurn = turn;
+                        break;
+                    }
+                }
+        }
+        return ai;
+    }
+
+    static void auditTrigger(Player me, WrappedAbility wa) {
+        Card host = wa.getHostCard();
+        Game g = me.getGame();
+        if (host == null || !named(host, HARMONIZER) || !g.getPhaseHandler().isPlayerTurn(me)) return;
+        PhaseType ph = g.getPhaseHandler().getPhase();
+        if (ph != PhaseType.UPKEEP && ph != PhaseType.DRAW && ph != PhaseType.MAIN1 && ph != PhaseType.COMBAT_BEGIN) return;
+        Card tgt = null;
+        if (wa.getTargets() != null) for (Object o : wa.getTargets()) if (o instanceof Card) tgt = (Card) o;
+        if (tgt == null) return;
+        if (canAttackThisTurn(tgt) && tgt.getNetPower() > 0) return;
+        for (Card c : me.getCreaturesInPlay())
+            if (c != tgt && canAttackThisTurn(c) && c.getNetPower() > 0 && !c.hasKeyword(forge.game.keyword.Keyword.HEXPROOF)) {
+                ControlBrain.count("mis_harm_target");
+                return;
+            }
+    }
+
+    /**
+     * lftrace@NAME (2026-10-23, for agent scoring of game samples): before each of our main-phase decisions with an
+     * empty stack, a snapshot line in ControlBrain.trace -- the game-log position, hand, untapped mana sources, land
+     * drops used, our battlefield -- and the choice made. Reads state only.
+     */
+    static String lastSnap = "";
+
+    static void trace(Player me, List<SpellAbility> ai) {
+        Game g = me.getGame();
+        if (!g.getPhaseHandler().isPlayerTurn(me) || !g.getStack().isEmpty()) return;
+        PhaseType ph = g.getPhaseHandler().getPhase();
+        if (ph != PhaseType.MAIN1 && ph != PhaseType.MAIN2) return;
+        StringBuilder s = new StringBuilder();
+        s.append("hand=[");
+        List<String> h = new ArrayList<>();
+        for (Card c : me.getCardsIn(ZoneType.Hand)) h.add(c.getName());
+        java.util.Collections.sort(h);
+        s.append(String.join("; ", h)).append("]");
+        int mana = 0;
+        for (Card c : me.getCardsIn(ZoneType.Battlefield))
+            if (c.isUntapped() && !c.getManaAbilities().isEmpty() && (c.isLand() || !c.isSick())) mana++;
+        s.append(" untapped_mana_sources=").append(mana);
+        s.append(" land_drops=").append(me.getLandsPlayedThisTurn()).append("/").append(me.getMaxLandPlaysInfinite() ? "inf" : String.valueOf(me.getMaxLandPlays()));
+        List<String> b = new ArrayList<>();
+        for (Card c : me.getCardsIn(ZoneType.Battlefield)) {
+            String x = c.getName();
+            if (c.isCreature()) x += " " + c.getNetPower() + "/" + c.getNetToughness() + (c.isSick() && !c.hasKeyword(forge.game.keyword.Keyword.HASTE) ? " sick" : "");
+            if (c.isTapped()) x += " tapped";
+            b.add(x);
+        }
+        s.append(" battlefield=[").append(String.join("; ", b)).append("]");
+        Player op = ProwessBrain.opponent(me);
+        if (op != null) s.append(" opp=[").append(board(op)).append("]");
+        String snap = s.toString();
+        String choice = ai == null || ai.isEmpty() ? "pass" : choiceText(ai.get(0));
+        String line = "@" + g.getGameLog().getAllEntries().size() + " T" + g.getPhaseHandler().getTurn() + " " + ph + ": " + snap + " -> " + choice;
+        if ((snap + choice).equals(lastSnap)) return;
+        lastSnap = snap + choice;
+        ControlBrain.trace.append(line).append("\n");
+    }
+
+    static final forge.game.keyword.Keyword[] KW = {forge.game.keyword.Keyword.FLYING, forge.game.keyword.Keyword.REACH,
+            forge.game.keyword.Keyword.TRAMPLE, forge.game.keyword.Keyword.DEATHTOUCH, forge.game.keyword.Keyword.VIGILANCE,
+            forge.game.keyword.Keyword.HASTE, forge.game.keyword.Keyword.MENACE, forge.game.keyword.Keyword.INDESTRUCTIBLE,
+            forge.game.keyword.Keyword.LIFELINK, forge.game.keyword.Keyword.HEXPROOF};
+
+    /** a player's permanents for the trace: "Name#id P/T kw tapped sick" (creatures), "Name#id tapped" (other
+     *  nonland permanents), then "lands U/T" (untapped/total); ids let the condenser follow each card */
+    static String board(Player p) {
+        List<String> b = new ArrayList<>();
+        int lands = 0, untapped = 0;
+        boolean active = p.getGame().getPhaseHandler().isPlayerTurn(p);   // summoning sickness matters only on its own turn
+        for (Card c : p.getCardsIn(ZoneType.Battlefield)) {
+            if (c.isLand() && !c.isCreature()) { lands++; if (c.isUntapped()) untapped++; continue; }
+            StringBuilder x = new StringBuilder(c.getName()).append('#').append(c.getId());
+            if (c.isCreature()) {
+                x.append(' ').append(c.getNetPower()).append('/').append(c.getNetToughness());
+                for (forge.game.keyword.Keyword k : KW) if (c.hasKeyword(k)) x.append(' ').append(k.toString().toLowerCase());
+                if (active && c.isSick() && !c.hasKeyword(forge.game.keyword.Keyword.HASTE)) x.append(" sick");
+            }
+            if (c.isTapped()) x.append(" tapped");
+            b.add(x.toString());
+        }
+        b.add("lands " + untapped + "/" + lands);
+        return String.join("; ", b);
+    }
+
+    /** lftrace at combat: our attack declaration (ATTACK) and our block declaration (BLOCK) */
+    static void traceCombat(Player me, String what, forge.game.combat.Combat combat) {
+        Game g = me.getGame();
+        Player op = ProwessBrain.opponent(me);
+        if (op == null || combat == null) return;
+        List<String> pairs = new ArrayList<>();
+        for (Card a : combat.getAttackers()) {
+            List<String> bl = new ArrayList<>();
+            for (Card b : combat.getBlockers(a)) bl.add(b.getName() + "#" + b.getId());
+            pairs.add(a.getName() + "#" + a.getId() + (bl.isEmpty() ? "" : " blocked by " + String.join(" + ", bl)));
+        }
+        ControlBrain.trace.append("@").append(g.getGameLog().getAllEntries().size()).append(" T").append(g.getPhaseHandler().getTurn())
+                .append(" ").append(what).append(": us=[").append(board(me)).append("] opp=[").append(board(op))
+                .append("] -> ").append(pairs.isEmpty() ? "none" : String.join("; ", pairs)).append("\n");
+    }
+
+    static String choiceText(SpellAbility sa) {
+        Card h = sa.getHostCard();
+        String n = h == null ? "?" : h.getName();
+        if (sa.isLandAbility()) return "play land " + n;
+        String d = sa.getDescription() == null ? "" : sa.getDescription().replace("\n", " ");
+        if (d.length() > 70) d = d.substring(0, 70);
+        return (sa.isSpell() ? "cast " : "activate ") + n + (sa.isSpell() ? "" : " (" + d + ")");
+    }
+
+    /**
+     * landseq2@NAME (2026-10-23, from the one-shot report on the landseq sample, pilot/reports/lf-landseq-report.md):
+     * in our main phases with an empty stack --
+     *  A. payoffs first: when Forge's choice makes a landfall (a land play; Fabled Passage, Escape Tunnel or Elven
+     *     Passage cracked for a land; Shared Roots, Earthbender Ascension, Lumbering Worldwagon), cast a castable
+     *     payoff first: Sazh's Chocobo, Mightform Harmonizer (from hand, or from exile after a warp; by warp only if a
+     *     creature that can attack would get the doubling), Icetill Explorer, Sapling Nursery;
+     *  B. no idle warp: Forge's warp of Mightform Harmonizer is replaced unless it is main 1, a landfall is still
+     *     available this turn, and a creature with power that can attack exists -- by our most expensive other
+     *     castable spell, or nothing;
+     *  C. landfall before combat: when Forge would leave main 1 while a landfall payoff is on our battlefield and a
+     *     creature can attack, cast a castable Shared Roots / Earthbender Ascension / Lumbering Worldwagon first;
+     *  D. Esper Origins: when Forge would pass main 2 with Esper Origins castable from hand, cast it.
+     */
+    static final String[] PAYOFFS2 = {CHOCOBO, HARMONIZER, EXPLORER, "Sapling Nursery"};
+    static final java.util.Set<String> LANDFALL_SPELLS = java.util.Set.of("Shared Roots", "Earthbender Ascension", "Lumbering Worldwagon");
+
+    static boolean makesLandfall2(SpellAbility sa) {
+        if (sa.isLandAbility()) return true;
+        Card h = sa.getHostCard();
+        if (h == null) return false;
+        String n = h.getName();
+        if ((n.equals(PASSAGE) || n.equals(TUNNEL) || n.equals("Elven Passage")) && sa.getApi() == ApiType.ChangeZone) return true;
+        return sa.isSpell() && LANDFALL_SPELLS.contains(n);
+    }
+
+    static boolean isWarp(SpellAbility sa) {
+        return (sa.getDescription() + " " + sa).toLowerCase().contains("warp");
+    }
+
+    /** castable spell abilities of our cards named N in zone Z (warp variants included) */
+    static List<SpellAbility> castable(Player me, ZoneType z, String n) {
+        CardCollection cs = new CardCollection();
+        for (Card c : me.getCardsIn(z)) if (n == null || named(c, n)) cs.add(c);
+        List<SpellAbility> out = new ArrayList<>();
+        if (cs.isEmpty()) return out;
+        for (SpellAbility sa : ComputerUtilAbility.getSpellAbilities(cs, me)) {
+            if (!sa.isSpell()) continue;
+            sa.setActivatingPlayer(me);
+            try {
+                if (sa.canPlay() && ComputerUtilCost.canPayCost(sa, me, false)) out.add(sa);
+            } catch (Exception e) {
+                continue;
+            }
+        }
+        return out;
+    }
+
+    static boolean attackerWithPower(Player me) {
+        for (Card c : me.getCreaturesInPlay()) if (canAttackThisTurn(c) && c.getNetPower() > 0) return true;
+        return false;
+    }
+
+    static boolean landfallLeft(Player me) {
+        boolean drop = me.getMaxLandPlaysInfinite() || me.getLandsPlayedThisTurn() < me.getMaxLandPlays();
+        if (drop) for (Card c : me.getCardsIn(ZoneType.Hand)) if (c.isLand()) return true;
+        for (Card c : me.getCardsIn(ZoneType.Battlefield))
+            if (c.isUntapped() && (named(c, PASSAGE) || named(c, TUNNEL) || named(c, "Elven Passage"))) return true;
+        for (String n : LANDFALL_SPELLS) if (!castable(me, ZoneType.Hand, n).isEmpty()) return true;
+        return false;
+    }
+
+    static boolean payoffOnBoard(Player me) {
+        for (Card c : me.getCardsIn(ZoneType.Battlefield)) for (String p : PAYOFFS2) if (named(c, p)) return true;
+        return false;
+    }
+
+    static SpellAbility bestOther(Player me) {
+        SpellAbility best = null;
+        for (SpellAbility sa : castable(me, ZoneType.Hand, null)) {
+            if (named(sa.getHostCard(), HARMONIZER) || isWarp(sa)) continue;
+            if (best == null || sa.getHostCard().getCMC() > best.getHostCard().getCMC()) best = sa;
+        }
+        return best;
+    }
+
+    static List<SpellAbility> seq2(Player me, List<SpellAbility> ai) {
+        Game g = me.getGame();
+        if (!g.getPhaseHandler().isPlayerTurn(me) || !g.getStack().isEmpty()) return ai;
+        PhaseType ph = g.getPhaseHandler().getPhase();
+        if (ph != PhaseType.MAIN1 && ph != PhaseType.MAIN2) return ai;
+        SpellAbility pick = ai == null || ai.isEmpty() ? null : ai.get(0);
+        if (pick != null && makesLandfall2(pick)) {                                   // A
+            for (String p : PAYOFFS2) {
+                SpellAbility warp = null;
+                for (ZoneType z : new ZoneType[]{ZoneType.Hand, ZoneType.Exile})
+                    for (SpellAbility sa : castable(me, z, p)) {
+                        if (isWarp(sa)) { if (warp == null) warp = sa; continue; }
+                        ControlBrain.count("landseq2_payoff_first");
+                        return List.of(sa);
+                    }
+                if (warp != null && ph == PhaseType.MAIN1 && attackerWithPower(me)) {
+                    ControlBrain.count("landseq2_payoff_first_warp");
+                    return List.of(warp);
+                }
+            }
+            return ai;
+        }
+        if (pick != null && pick.isSpell() && pick.getHostCard() != null && named(pick.getHostCard(), HARMONIZER) && isWarp(pick)) {   // B
+            if (ph == PhaseType.MAIN1 && landfallLeft(me) && attackerWithPower(me)) return ai;
+            SpellAbility o = bestOther(me);
+            ControlBrain.count(o == null ? "landseq2_warp_vetoed" : "landseq2_warp_replaced");
+            return o == null ? null : List.of(o);
+        }
+        if (pick == null && ph == PhaseType.MAIN1 && payoffOnBoard(me) && attackerWithPower(me)) {          // C
+            for (String n : LANDFALL_SPELLS)
+                for (SpellAbility sa : castable(me, ZoneType.Hand, n)) {
+                    ControlBrain.count("landseq2_landfall_precombat");
+                    return List.of(sa);
+                }
+        }
+        if (pick == null && ph == PhaseType.MAIN2)                                                    // D
+            for (SpellAbility sa : castable(me, ZoneType.Hand, "Esper Origins")) {
+                ControlBrain.count("landseq2_esper");
+                return List.of(sa);
+            }
+        return ai;
+    }
+
     static SpellAbility choose(Player me) {
         ControlBrain.count("choose_called");
         if (!window(me)) return null;
