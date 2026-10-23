@@ -12,6 +12,10 @@
 //   GET  api.php?a=job&slots=N     200 job JSON, or 204 when there is no work
 //   POST api.php?a=result&job=ID   body: zip of results.jsonl + logs/   -> {"accepted", "duplicates"}
 //   GET  api.php?a=withdrawn       campaigns withdrawn by the orchestrator (workers drop their unstarted games)
+//   POST api.php?a=release&job=ID&harness=H   body: why (text). A job the client could not play (its harness did not
+//        compile there, GitHub unreachable, ...): its games go back to the pool at once, and the failure is recorded
+//        (table harness_fail). Campaigns on harness H are then not offered to this worker until it restarts (the job
+//        request's "started" is later than the failure), so it gets other work. v9+ clients (2026-10-23).
 //   GET  api.php?a=status
 // DATA/workers.json {"<worker name>": {"threads": N}} sets a machine's game-worker count (sent with each job; the
 // client never exceeds its own limit of logical CPUs - 2).
@@ -40,7 +44,8 @@ $db->busyTimeout(20000);
 $db->exec("create table if not exists games (campaign text, gid text, status text default 'open', job text, worker text,
   lease_until real, done_at real, primary key (campaign, gid));
 create table if not exists jobs (job text primary key, campaign text, worker text, created real, n integer, done real);
-create table if not exists worker_client (worker text primary key, version integer, seen real, threads integer);");
+create table if not exists worker_client (worker text primary key, version integer, seen real, threads integer);
+create table if not exists harness_fail (worker text, harness text, at real, why text, primary key (worker, harness));");
 
 function campaigns($DATA, $db) {
     $out = [];
@@ -240,6 +245,14 @@ if ($a === 'job') {
     $SLOTS = $slots;
     $CLIENT_V = intval($_GET['v'] ?? 0);
     [$order, $fresh] = dwell_filter($db, $worker, $camps, order_campaigns($camps, $wts, $OPEN), $now);
+    // harnesses this worker reported it cannot play since it last started (a=release): not offered again
+    $started = floatval($_GET['started'] ?? 0);
+    $failed = [];
+    $hf = $db->prepare('select harness from harness_fail where worker=? and at > ?');
+    $hf->bindValue(1, $worker); $hf->bindValue(2, $started);
+    $hr = $hf->execute();
+    while ($row = $hr->fetchArray(SQLITE3_NUM)) $failed[$row[0]] = true;
+    if ($failed) $order = array_values(array_filter($order, fn($n) => !isset($failed[$camps[$n]['harness'] ?? ''])));
     // DATA/HOLD holds the whole queue for one project (2026-10-15, the user's sealed project: "the whole queue",
     // deck lines paused): only campaigns whose name starts with its text are issued; priority alone leaked ~70% of
     // the games to lower work in the gaps between batches, which workers then queued locally ahead of the next batch
@@ -346,6 +359,23 @@ if ($a === 'result' && $_SERVER['REQUEST_METHOD'] === 'POST') {
     $z->close();
     unlink($tmp);
     out(200, ['accepted' => $acc, 'duplicates' => $dup]);
+}
+
+if ($a === 'release' && $_SERVER['REQUEST_METHOD'] === 'POST') {
+    $job = (string)($_GET['job'] ?? '');
+    $h = substr((string)($_GET['harness'] ?? ''), 0, 64);
+    $why = substr((string)file_get_contents('php://input'), 0, 2000);
+    $db->exec('begin immediate');
+    $st = $db->prepare("update games set status='open', job=null, worker=null where job=? and worker=? and status='leased'");
+    $st->bindValue(1, $job); $st->bindValue(2, $worker); $st->execute();
+    $n = $db->changes();
+    if ($h !== '') {
+        $ins = $db->prepare('insert or replace into harness_fail (worker, harness, at, why) values (?, ?, ?, ?)');
+        $ins->bindValue(1, $worker); $ins->bindValue(2, $h); $ins->bindValue(3, microtime(true)); $ins->bindValue(4, $why);
+        $ins->execute();
+    }
+    $db->exec('commit');
+    out(200, ['released' => $n]);
 }
 
 if ($a === 'withdrawn') {   // campaigns whose not-yet-started games workers should drop from their local queues

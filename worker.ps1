@@ -31,7 +31,7 @@ param(
     [int]$IdleWait = 20                     # seconds to wait before asking again when the server has no work
 )
 $Waiting = 2                                # games queued in each game worker beyond the one it is playing
-$ClientVersion = 8                          # the server can ask clients older than its minimum to update
+$ClientVersion = 9                          # the server can ask clients older than its minimum to update
 $ErrorActionPreference = "Stop"
 $ProgressPreference = "SilentlyContinue"   # Invoke-WebRequest's progress bar makes downloads very slow on PS 5.1
 [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
@@ -177,6 +177,7 @@ if ($Watchdog) {
 }
 
 # a normal start: this is the worker; a deliberate stop is cleared
+$script:StartedAt = [DateTimeOffset]::UtcNow.ToUnixTimeSeconds()   # sent with job requests (v9); UTC (PS 5.1's -UFormat %s is local time)
 if (Test-Path $stopMark) { Remove-Item $stopMark -Force }
 Set-Content -Path $pidFile -Value $PID
 $WindowTitleText = "Forge Worker: Ctrl+Q to stop (closing this window restarts it)"
@@ -477,7 +478,7 @@ while ($true) {
     if (-not $stop -and $queue.Count -lt $Threads -and (Get-Date) -ge $nextFetch -and -not ($Once -and $fetched -gt 0)) {
         $r = $null
         try {
-            $r = Invoke-WebRequest -Uri "$Server/api.php?a=job&slots=$Threads&v=$ClientVersion" -Headers $headers -UseBasicParsing -TimeoutSec 120
+            $r = Invoke-WebRequest -Uri "$Server/api.php?a=job&slots=$Threads&v=$ClientVersion&started=$script:StartedAt" -Headers $headers -UseBasicParsing -TimeoutSec 120
         } catch {
             if ($_.Exception.Response -and [int]$_.Exception.Response.StatusCode -eq 426) {
                 Log "the server needs a newer forge-worker: run 'Update Forge Worker' (it shows the changes and asks first)"; $stop = $true
@@ -507,10 +508,17 @@ while ($true) {
                 foreach ($x in @($items | Where-Object { $_[1].Prio -lt $st.Prio })) { [void]$queue.Add($x) }
                 if ($Once) { $stop = $true }
             } catch {
-                # e.g. the harness check refused the job, or GitHub was unreachable: play none of it (its lease expires
-                # and the server re-issues it), wait, and carry on
-                Log "skipping job $($job.job): $($_.Exception.Message); trying again in 5 min"
-                $nextFetch = (Get-Date).AddMinutes(5)
+                # e.g. the harness did not compile here, or GitHub was unreachable: play none of it. v9 (2026-10-23):
+                # hand its games back at once and report why; the server then offers this machine no more work on that
+                # harness until it restarts (before v9 the games stayed leased to it and it was re-issued the same work)
+                $why = "$($_.Exception.Message)"
+                $back = $null
+                try {
+                    $back = Invoke-RestMethod -Uri "$Server/api.php?a=release&job=$($job.job)&harness=$($job.harness)" -Method Post -Headers $headers `
+                        -Body ([Text.Encoding]::UTF8.GetBytes($why)) -ContentType "text/plain; charset=utf-8" -TimeoutSec 60
+                } catch { }
+                if ($back) { Log "skipping job $($job.job): $why; handed its $($back.released) games back"; $nextFetch = (Get-Date).AddSeconds(30) }
+                else { Log "skipping job $($job.job): $why; trying again in 5 min"; $nextFetch = (Get-Date).AddMinutes(5) }
             }
         }
     }
