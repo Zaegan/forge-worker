@@ -60,6 +60,7 @@ import java.util.List;
  * landfall — LandfallBrain's Escape Tunnel + Mightform Harmonizer kill for Mono-Green Landfall.
  * lftrace@NAME — LandfallBrain.trace: state snapshots at our main-phase decisions (for agent scoring), changes nothing.
  * lfaudit@NAME — LandfallBrain.audit: counts Landfall misplays (mis_*), changes nothing.
+ * landseq4@NAME — landseq3 + Earthbender Ascension before the other landfalls; payoffs before part C.
  * landseq3@NAME — landseq2 + Esper flashback, safe-attacker warp, safe attacks, main-1 lethal mode (LandfallBrain).
  * landseq2@NAME — LandfallBrain.seq2: payoffs first (also from exile), no idle warp, landfall spells before combat, Esper Origins.
  * landseq@NAME — LandfallBrain.seq: cast a castable landfall payoff before the landfall Forge chose (2026-10-23).
@@ -243,7 +244,7 @@ public class AiTweaks {
             ai = TWEAKS.contains("leyline") ? LeylineBrain.post(getPlayer(), ai) : ai;
             ai = ProwessBrain.ON(getPlayer()) ? ProwessBrain.post(getPlayer(), ai) : ai;
             ai = on("landseq", getPlayer()) ? LandfallBrain.seq(getPlayer(), ai) : ai;
-            ai = on("landseq2", getPlayer()) || on("landseq3", getPlayer()) ? LandfallBrain.seq2(getPlayer(), ai) : ai;
+            ai = on("landseq2", getPlayer()) || on("landseq3", getPlayer()) || on("landseq4", getPlayer()) ? LandfallBrain.seq2(getPlayer(), ai) : ai;
             if (on("edgargrow", getPlayer()) && ai != null && !ai.isEmpty() && holdForEdgar(getPlayer(), ai.get(0))) {
                 ControlBrain.count("edgargrow_pass");
                 return null;
@@ -292,7 +293,7 @@ public class AiTweaks {
                     return r;
                 }
             }
-            if (on("landseq3", getPlayer())) {
+            if (on("landseq3", getPlayer()) || on("landseq4", getPlayer())) {
                 Boolean r3 = LandfallBrain.playTrigger3(getPlayer(), wa);
                 if (r3 != null) return r3;
             }
@@ -332,7 +333,7 @@ public class AiTweaks {
             if (TWEAKS.contains("protect")) ProtectBrain.holdTamBack(getPlayer(), combat);
             if (TWEAKS.contains("leyline")) LeylineBrain.forceAttack(getPlayer(), combat);
             if (ProwessBrain.ON(getPlayer())) ProwessBrain.forceAttack(getPlayer(), combat);
-            if (on("landseq3", getPlayer())) LandfallBrain.attack3(getPlayer(), combat);
+            if (on("landseq3", getPlayer()) || on("landseq4", getPlayer())) LandfallBrain.attack3(getPlayer(), combat);
             if (on("lftrace", getPlayer())) LandfallBrain.traceCombat(getPlayer(), "ATTACK", combat);
         }
 

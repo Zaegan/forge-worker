@@ -470,29 +470,45 @@ public class LandfallBrain {
         return best;
     }
 
+    /** A's choice: a castable payoff to cast before a landfall (Chocobo, Harmonizer from hand or exile -- by warp only
+     *  with an attacker for its doubling --, Explorer, Nursery), or null */
+    static SpellAbility payoffFirst(Player me, PhaseType ph, boolean v3) {
+        Game g = me.getGame();
+        for (String p : PAYOFFS2) {
+            SpellAbility warp = null;
+            for (ZoneType z : new ZoneType[]{ZoneType.Hand, ZoneType.Exile})
+                for (SpellAbility sa : castable(me, z, p)) {
+                    if (isWarp(sa)) { if (warp == null) warp = sa; continue; }
+                    ControlBrain.count("landseq2_payoff_first");
+                    return sa;
+                }
+            if (warp != null && ph == PhaseType.MAIN1 && (v3 ? safeAttacker(me, true) != null : attackerWithPower(me))) {
+                if (v3) { warpGame = g; warpTurn = g.getPhaseHandler().getTurn(); }
+                ControlBrain.count("landseq2_payoff_first_warp");
+                return warp;
+            }
+        }
+        return null;
+    }
+
     static List<SpellAbility> seq2(Player me, List<SpellAbility> ai) {
         Game g = me.getGame();
-        boolean v3 = AiTweaks.on("landseq3", me);
+        boolean v4 = AiTweaks.on("landseq4", me);
+        boolean v3 = v4 || AiTweaks.on("landseq3", me);
         if (v3) { List<SpellAbility> l = lethalStep(me, ai); if (l != ai) return l; }
         if (!g.getPhaseHandler().isPlayerTurn(me) || !g.getStack().isEmpty()) return ai;
         PhaseType ph = g.getPhaseHandler().getPhase();
         if (ph != PhaseType.MAIN1 && ph != PhaseType.MAIN2) return ai;
         SpellAbility pick = ai == null || ai.isEmpty() ? null : ai.get(0);
         if (pick != null && makesLandfall2(pick)) {                                   // A
-            for (String p : PAYOFFS2) {
-                SpellAbility warp = null;
-                for (ZoneType z : new ZoneType[]{ZoneType.Hand, ZoneType.Exile})
-                    for (SpellAbility sa : castable(me, z, p)) {
-                        if (isWarp(sa)) { if (warp == null) warp = sa; continue; }
-                        ControlBrain.count("landseq2_payoff_first");
-                        return List.of(sa);
-                    }
-                if (warp != null && ph == PhaseType.MAIN1 && (v3 ? safeAttacker(me, true) != null : attackerWithPower(me))) {
-                    if (v3) { warpGame = g; warpTurn = g.getPhaseHandler().getTurn(); }
-                    ControlBrain.count("landseq2_payoff_first_warp");
-                    return List.of(warp);
+            SpellAbility p = payoffFirst(me, ph, v3);
+            if (p != null) return List.of(p);
+            // landseq4 P1: Earthbender Ascension before the turn's other landfalls (its quest counters count them)
+            if (v4 && ph == PhaseType.MAIN1 && !(pick.isSpell() && named(pick.getHostCard(), "Earthbender Ascension")))
+                for (SpellAbility sa : castable(me, ZoneType.Hand, "Earthbender Ascension")) {
+                    ControlBrain.count("landseq4_ascension_first");
+                    return List.of(sa);
                 }
-            }
             return ai;
         }
         if (pick != null && pick.isSpell() && pick.getHostCard() != null && named(pick.getHostCard(), HARMONIZER) && isWarp(pick)) {   // B
@@ -505,6 +521,10 @@ public class LandfallBrain {
             return o == null ? null : List.of(o);
         }
         if (pick == null && ph == PhaseType.MAIN1 && payoffOnBoard(me) && attackerWithPower(me)) {          // C
+            if (v4) {   // landseq4 fix: payoffs before the landfall spell this part casts (game 2 of the landseq3 report)
+                SpellAbility p = payoffFirst(me, ph, v3);
+                if (p != null) return List.of(p);
+            }
             for (String n : LANDFALL_SPELLS)
                 for (SpellAbility sa : castable(me, ZoneType.Hand, n)) {
                     ControlBrain.count("landseq2_landfall_precombat");
@@ -526,7 +546,10 @@ public class LandfallBrain {
     }
 
     /**
-     * landseq3@NAME (2026-10-23, from pilot/reports/lf-landseq2-report.md): landseq2, plus
+     * landseq4@NAME (2026-10-23, from pilot/reports/lf-landseq3-10-report.md): landseq3, plus Earthbender Ascension cast
+ *  before the turn's other landfalls (after the payoffs), and payoffs first also before part C's landfall spell.
+ *
+ * landseq3@NAME (2026-10-23, from pilot/reports/lf-landseq2-report.md): landseq2, plus
      *  E. Esper Origins flashback from the graveyard when Forge would pass main 2 (6+ untapped sources with Sapling
      *     Nursery out, to keep {1}{G} for it);
      *  F. the warp needs a SAFE attacker (safeAttacker: can attack, power 1+, no mana ability -- it may pay for the
