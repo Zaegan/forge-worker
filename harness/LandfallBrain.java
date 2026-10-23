@@ -466,6 +466,8 @@ public class LandfallBrain {
 
     static List<SpellAbility> seq2(Player me, List<SpellAbility> ai) {
         Game g = me.getGame();
+        boolean v3 = AiTweaks.on("landseq3", me);
+        if (v3) { List<SpellAbility> l = lethalStep(me, ai); if (l != ai) return l; }
         if (!g.getPhaseHandler().isPlayerTurn(me) || !g.getStack().isEmpty()) return ai;
         PhaseType ph = g.getPhaseHandler().getPhase();
         if (ph != PhaseType.MAIN1 && ph != PhaseType.MAIN2) return ai;
@@ -479,7 +481,8 @@ public class LandfallBrain {
                         ControlBrain.count("landseq2_payoff_first");
                         return List.of(sa);
                     }
-                if (warp != null && ph == PhaseType.MAIN1 && attackerWithPower(me)) {
+                if (warp != null && ph == PhaseType.MAIN1 && (v3 ? safeAttacker(me, true) != null : attackerWithPower(me))) {
+                    if (v3) { warpGame = g; warpTurn = g.getPhaseHandler().getTurn(); }
                     ControlBrain.count("landseq2_payoff_first_warp");
                     return List.of(warp);
                 }
@@ -487,7 +490,10 @@ public class LandfallBrain {
             return ai;
         }
         if (pick != null && pick.isSpell() && pick.getHostCard() != null && named(pick.getHostCard(), HARMONIZER) && isWarp(pick)) {   // B
-            if (ph == PhaseType.MAIN1 && landfallLeft(me) && attackerWithPower(me)) return ai;
+            if (ph == PhaseType.MAIN1 && landfallLeft(me) && (v3 ? safeAttacker(me, true) != null : attackerWithPower(me))) {
+                if (v3) { warpGame = g; warpTurn = g.getPhaseHandler().getTurn(); }
+                return ai;
+            }
             SpellAbility o = bestOther(me);
             ControlBrain.count(o == null ? "landseq2_warp_vetoed" : "landseq2_warp_replaced");
             return o == null ? null : List.of(o);
@@ -504,7 +510,191 @@ public class LandfallBrain {
                 ControlBrain.count("landseq2_esper");
                 return List.of(sa);
             }
+        if (v3 && pick == null && ph == PhaseType.MAIN2                                               // E
+                && (count(me, ZoneType.Battlefield, "Sapling Nursery") == 0 || untappedSources(me) >= 6))
+            for (SpellAbility sa : castable(me, ZoneType.Graveyard, "Esper Origins")) {
+                ControlBrain.count("landseq3_esper_flashback");
+                return List.of(sa);
+            }
         return ai;
+    }
+
+    /**
+     * landseq3@NAME (2026-10-23, from pilot/reports/lf-landseq2-report.md): landseq2, plus
+     *  E. Esper Origins flashback from the graveyard when Forge would pass main 2 (6+ untapped sources with Sapling
+     *     Nursery out, to keep {1}{G} for it);
+     *  F. the warp needs a SAFE attacker (safeAttacker: can attack, power 1+, no mana ability -- it may pay for the
+     *     warp --, and no untapped opposing creature that could block it has deathtouch or power >= its toughness);
+     *     the turn's safe attackers are then made to attack;
+     *  G. safe attacks: a safe attacker that Forge keeps home attacks, unless it is needed for defence (the
+     *     opponent's creatures' total power >= our life);
+     *  H. lethal mode, main 1: the best attacker's power after this turn's remaining landfalls (each doubled by every
+     *     Harmonizer; Chocobo +1 each), against the opponent's best blocks (trample: minus the toughness of every
+     *     untapped creature that can block it; no trample: 0 if any can block it). If that reaches the opponent's
+     *     life: every Harmonizer and Earthbender Ascension trigger targets that creature, a fetch is played before a
+     *     basic, every landfall is made before combat (lands, fetch cracks), and every creature attacks.
+     */
+    static Game warpGame, lethalGame; static int warpTurn = -1, lethalTurn = -1; static Card lethalTarget;
+
+    static int untappedSources(Player me) {
+        int mana = 0;
+        for (Card c : me.getCardsIn(ZoneType.Battlefield))
+            if (c.isUntapped() && !c.getManaAbilities().isEmpty() && (c.isLand() || !c.isSick())) mana++;
+        return mana;
+    }
+
+    static boolean kills(Card blocker, Card attacker) {
+        return blocker.hasKeyword(forge.game.keyword.Keyword.DEATHTOUCH) || blocker.getNetPower() >= attacker.getNetToughness() - attacker.getDamage();
+    }
+
+    static Card safeAttacker(Player me, boolean any) {
+        Player op = ProwessBrain.opponent(me);
+        if (op == null) return null;
+        for (Card c : me.getCreaturesInPlay()) {
+            if (!canAttackThisTurn(c) || c.getNetPower() < 1 || !c.getManaAbilities().isEmpty()) continue;
+            boolean safe = true;
+            for (Card b : op.getCreaturesInPlay()) {
+                if (b.isTapped()) continue;
+                boolean can;
+                try { can = CombatUtil.canBlock(c, b); } catch (Exception e) { can = true; }
+                if (can && kills(b, c)) { safe = false; break; }
+            }
+            if (safe) return c;
+        }
+        return null;
+    }
+
+    static boolean defenceNeeded(Player me) {
+        Player op = ProwessBrain.opponent(me);
+        if (op == null) return true;
+        long p = 0;
+        for (Card b : op.getCreaturesInPlay()) p += Math.max(0, b.getNetPower());
+        return p >= me.getLife();
+    }
+
+    static boolean lethalOn(Player me) {
+        return lethalGame == me.getGame() && lethalTurn == me.getGame().getPhaseHandler().getTurn()
+                && lethalTarget != null && lethalTarget.isInPlay() && lethalTarget.getController() == me;
+    }
+
+    /** H: plan (once per main 1) and, while on, the next landfall step */
+    static List<SpellAbility> lethalStep(Player me, List<SpellAbility> ai) {
+        Game g = me.getGame();
+        if (!g.getPhaseHandler().isPlayerTurn(me) || g.getPhaseHandler().getPhase() != PhaseType.MAIN1 || !g.getStack().isEmpty()) return ai;
+        Player op = ProwessBrain.opponent(me);
+        if (op == null) return ai;
+        if (!lethalOn(me)) {
+            int lf = remainingLandfalls(me, null);
+            long harm = count(me, ZoneType.Battlefield, HARMONIZER);
+            Card best = null; long bestD = -1;
+            for (Card x : me.getCreaturesInPlay()) {
+                if (!canAttackThisTurn(x)) continue;
+                long p = project(x, lf, harm);
+                long d;
+                List<Card> bl = new ArrayList<>();
+                for (Card b : op.getCreaturesInPlay()) {
+                    boolean can;
+                    try { can = b.isUntapped() && CombatUtil.canBlock(x, b); } catch (Exception e) { can = true; }
+                    if (can) bl.add(b);
+                }
+                if (x.hasKeyword(forge.game.keyword.Keyword.TRAMPLE)) {
+                    long tough = 0;
+                    for (Card b : bl) tough += Math.max(0, b.getNetToughness() - b.getDamage());
+                    d = p - tough;
+                } else d = bl.isEmpty() ? p : 0;
+                if (d > bestD) { bestD = d; best = x; }
+            }
+            if (best == null || bestD < op.getLife()) return ai;
+            lethalGame = g; lethalTurn = g.getPhaseHandler().getTurn(); lethalTarget = best;
+            ControlBrain.count("landseq3_lethal_planned");
+        }
+        SpellAbility pick = ai == null || ai.isEmpty() ? null : ai.get(0);
+        // a fetch before a basic
+        if (pick != null && pick.isLandAbility() && pick.getHostCard() != null && pick.getHostCard().getType().isBasic()) {
+            SpellAbility f = landPlay(me, true);
+            if (f != null) { ControlBrain.count("landseq3_lethal_fetch_first"); return List.of(f); }
+        }
+        if (pick == null) {   // Forge would leave main 1: make the remaining landfalls first
+            SpellAbility l = landPlay(me, true);
+            if (l == null) l = landPlay(me, false);
+            if (l == null) l = fetchCrack(me);
+            if (l != null) { ControlBrain.count("landseq3_lethal_landfall"); return List.of(l); }
+        }
+        return ai;
+    }
+
+    static SpellAbility landPlay(Player me, boolean fetchOnly) {
+        boolean drop = me.getMaxLandPlaysInfinite() || me.getLandsPlayedThisTurn() < me.getMaxLandPlays();
+        if (!drop) return null;
+        List<Card> lands = new ArrayList<>();
+        for (Card c : me.getCardsIn(ZoneType.Hand)) if (c.isLand() && (!fetchOnly || fetchType(c) || named(c, "Elven Passage"))) lands.add(c);
+        if (count(me, ZoneType.Battlefield, EXPLORER) > 0)
+            for (Card c : me.getCardsIn(ZoneType.Graveyard)) if (c.isLand() && (!fetchOnly || fetchType(c) || named(c, "Elven Passage"))) lands.add(c);
+        for (Card c : lands)
+            for (SpellAbility sa : c.getAllPossibleAbilities(me, true)) {
+                if (!sa.isLandAbility()) continue;
+                try {
+                    if (sa.canPlay() && me.canPlayLand(c, false, sa)) return sa;
+                } catch (Exception e) {
+                    continue;
+                }
+            }
+        return null;
+    }
+
+    static SpellAbility fetchCrack(Player me) {
+        for (Card c : me.getCardsIn(ZoneType.Battlefield)) {
+            if (!c.isUntapped() || !(fetchType(c) || named(c, "Elven Passage"))) continue;
+            for (SpellAbility sa : c.getSpellAbilities()) {
+                if (sa.getApi() != ApiType.ChangeZone) continue;
+                sa.setActivatingPlayer(me);
+                try {
+                    if (sa.canPlay() && ComputerUtilCost.canPayCost(sa, me, false)) return sa;
+                } catch (Exception e) {
+                    continue;
+                }
+            }
+        }
+        return null;
+    }
+
+    /** H: Harmonizer and Earthbender Ascension triggers at the lethal creature */
+    static Boolean playTrigger3(Player me, WrappedAbility wa) {
+        Card host = wa.getHostCard();
+        if (host == null || !(named(host, HARMONIZER) || named(host, "Earthbender Ascension")) || !wa.usesTargeting() || !lethalOn(me)) return null;
+        if (!wa.canTarget(lethalTarget)) return null;
+        wa.resetTargets();
+        wa.getTargets().add(lethalTarget);
+        ControlBrain.count("landseq3_lethal_target");
+        return ComputerUtil.playNoStack(wa.getActivatingPlayer(), wa, me.getGame(), true);
+    }
+
+    /** F/G/H attacks */
+    static void attack3(Player me, forge.game.combat.Combat combat) {
+        Game g = me.getGame();
+        Player op = ProwessBrain.opponent(me);
+        if (op == null) return;
+        boolean all = lethalOn(me);
+        boolean warped = warpGame == g && warpTurn == g.getPhaseHandler().getTurn();
+        boolean defence = defenceNeeded(me);
+        for (Card c : me.getCreaturesInPlay()) {
+            if (combat.isAttacking(c) || !canAttackThisTurn(c) || !CombatUtil.canAttack(c, op)) continue;
+            boolean add = all;
+            if (!add && c.getNetPower() >= 1 && c.getManaAbilities().isEmpty()) {
+                boolean safe = true;
+                for (Card b : op.getCreaturesInPlay()) {
+                    if (b.isTapped()) continue;
+                    boolean can;
+                    try { can = CombatUtil.canBlock(c, b); } catch (Exception e) { can = true; }
+                    if (can && kills(b, c)) { safe = false; break; }
+                }
+                add = safe && (warped || !defence);
+            }
+            if (add) {
+                combat.addAttacker(c, op);
+                ControlBrain.count(all ? "landseq3_lethal_attacker" : warped ? "landseq3_warp_attacker" : "landseq3_safe_attacker");
+            }
+        }
     }
 
     static SpellAbility choose(Player me) {
