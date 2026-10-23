@@ -53,6 +53,25 @@ if ($Update) {
     if ((Read-Host "Type YES to install this version") -ne "YES") { Write-Host "Not updated."; exit 0 }
     [IO.File]::WriteAllText($self, $new)
     Write-Host "Updated $self."
+    # v9: a running worker is restarted so the new version takes effect (a deliberately stopped one stays stopped)
+    $pf = Join-Path $Dir "worker.pid"
+    if ((Test-Path $pf) -and -not (Test-Path (Join-Path $Dir "stopped_by_user"))) {
+        $op = [int](Get-Content $pf -Raw).Trim()
+        $cmd = $null
+        try { $cmd = if ($onWindows) { (Get-CimInstance Win32_Process -Filter "ProcessId=$op").CommandLine } else { ([IO.File]::ReadAllText("/proc/$op/cmdline")) -replace "`0", " " } } catch { }
+        if ($cmd -and $cmd -match "worker\.ps1" -and $cmd -notmatch "-Watchdog|-Stop|-Update") {
+            if ($onWindows) { & taskkill /PID $op /T /F 2>&1 | Out-Null } else { & /bin/sh -c "kill -TERM -$(((Get-Content "/proc/$op/stat" -Raw) -split ' ')[4])" 2>&1 | Out-Null }
+            Start-Sleep 5
+            if ($onWindows) {
+                Start-Process -FilePath (Join-Path $env:SystemRoot "System32\WindowsPowerShell\v1.0\powershell.exe") -WorkingDirectory $Dir `
+                    -ArgumentList "-NoProfile -ExecutionPolicy Bypass -File `"$self`" -Dir `"$Dir`""
+            } else {
+                $pw = (Get-Process -Id $PID).Path
+                & /bin/sh -c "cd '$Dir' && setsid nohup '$pw' -NoProfile -File '$self' -Dir '$Dir' > /dev/null 2>&1 < /dev/null &"
+            }
+            Write-Host "Restarted the running worker with the new version."
+        }
+    }
     Read-Host "Press Enter to close"
     exit 0
 }
@@ -225,22 +244,33 @@ function Download($url, $dest) {
 }
 
 # ---- Java ----
-if (-not $JavaHome) {
-    $jdk = Join-Path $Dir "jdk"
-    if (-not (Test-Path $jdk)) {
-        $os = if ($onWindows) { "windows" } else { "linux" }
-        $ext = if ($onWindows) { "zip" } else { "tar.gz" }
-        $arch = if ([Environment]::Is64BitOperatingSystem) { "x64" } else { "x86" }
-        $pkg = Join-Path $Dir "jdk21.$ext"
-        Download "https://api.adoptium.net/v3/binary/latest/21/ga/$os/$arch/jdk/hotspot/normal/eclipse" $pkg
-        $tmp = Join-Path $Dir "jdk-unpack"
-        New-Item -ItemType Directory -Force -Path $tmp | Out-Null
-        if ($onWindows) { Expand-Archive -Path $pkg -DestinationPath $tmp -Force } else { tar -xzf $pkg -C $tmp }
-        Move-Item (Get-ChildItem $tmp -Directory | Select-Object -First 1).FullName $jdk
-        Remove-Item $tmp -Recurse -Force
-    }
-    $JavaHome = $jdk
+# v9 (2026-10-23): a JDK is usable only with both java and javac (evan-pc's jdk\bin\javac.exe vanished while java.exe
+# stayed, so no new harness could compile, and the folder could not be deleted while in use). A broken JDK is left where
+# it is and a fresh one is downloaded into a new folder jdk-<stamp>; the newest complete one is used.
+function JdkOk($h) { (Test-Path (Join-Path $h "bin/java$exe")) -and (Test-Path (Join-Path $h "bin/javac$exe")) }
+function FindOrGetJdk {
+    $cands = @(Get-ChildItem $Dir -Directory -ErrorAction SilentlyContinue | Where-Object { $_.Name -eq "jdk" -or $_.Name -like "jdk-2*" } |
+               Sort-Object LastWriteTime -Descending)
+    foreach ($c in $cands) { if (JdkOk $c.FullName) { return $c.FullName } }
+    $stamp = Get-Date -Format "yyyyMMdd-HHmmss"
+    $target = if (Test-Path (Join-Path $Dir "jdk")) { Join-Path $Dir "jdk-$stamp" } else { Join-Path $Dir "jdk" }
+    if (Test-Path (Join-Path $Dir "jdk")) { Log "the JDK in $(Join-Path $Dir 'jdk') is incomplete (no javac): downloading a fresh one into $target" }
+    $os = if ($onWindows) { "windows" } else { "linux" }
+    $ext = if ($onWindows) { "zip" } else { "tar.gz" }
+    $arch = if ([Environment]::Is64BitOperatingSystem) { "x64" } else { "x86" }
+    $pkg = if ($target -like "*jdk-2*") { Join-Path $Dir "jdk21-$stamp.$ext" } else { Join-Path $Dir "jdk21.$ext" }
+    Download "https://api.adoptium.net/v3/binary/latest/21/ga/$os/$arch/jdk/hotspot/normal/eclipse" $pkg
+    $tmp = Join-Path $Dir "jdk-unpack-$stamp"
+    New-Item -ItemType Directory -Force -Path $tmp | Out-Null
+    if ($onWindows) { Expand-Archive -Path $pkg -DestinationPath $tmp -Force } else { tar -xzf $pkg -C $tmp }
+    Move-Item (Get-ChildItem $tmp -Directory | Select-Object -First 1).FullName $target
+    Remove-Item $tmp -Recurse -Force -ErrorAction SilentlyContinue
+    if ($pkg -like "*jdk21-2*") { Remove-Item $pkg -Force -ErrorAction SilentlyContinue }
+    if (-not (JdkOk $target)) { throw "the downloaded JDK in $target has no java/javac" }
+    return $target
 }
+$script:FixedJavaHome = [bool]$JavaHome
+if (-not $JavaHome) { $JavaHome = FindOrGetJdk }
 $java = Join-Path $JavaHome "bin/java$exe"
 $javac = Join-Path $JavaHome "bin/javac$exe"
 
@@ -288,6 +318,11 @@ function Harness($commit) {
     $files = (Get-ChildItem $src -Filter *.java).FullName
     Log "compiling the harness ($commit)"
     $ct = Get-Date
+    if (-not (Test-Path $javac) -and -not $script:FixedJavaHome) {   # the JDK lost javac while running (v9): get a fresh one
+        $script:JavaHome = FindOrGetJdk
+        $script:java = Join-Path $script:JavaHome "bin/java$exe"; $script:javac = Join-Path $script:JavaHome "bin/javac$exe"
+        Log "using the JDK in $script:JavaHome"
+    }
     $eap = $ErrorActionPreference; $ErrorActionPreference = "Continue"   # javac's notes on stderr are not errors
     & $javac -nowarn -encoding UTF-8 -d $classes -cp $jar $files 2>&1 | ForEach-Object { "$_" } | Where-Object { $_ -notmatch "^Note:" } | ForEach-Object { Log $_ }
     $ErrorActionPreference = $eap
