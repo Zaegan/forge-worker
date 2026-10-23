@@ -31,7 +31,7 @@ param(
     [int]$IdleWait = 20                     # seconds to wait before asking again when the server has no work
 )
 $Waiting = 2                                # games queued in each game worker beyond the one it is playing
-$ClientVersion = 9                          # the server can ask clients older than its minimum to update
+$ClientVersion = 10                         # the server can ask clients older than its minimum to update
 $ErrorActionPreference = "Stop"
 $ProgressPreference = "SilentlyContinue"   # Invoke-WebRequest's progress bar makes downloads very slow on PS 5.1
 [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
