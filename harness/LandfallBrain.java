@@ -327,6 +327,12 @@ public class LandfallBrain {
             b.add(x);
         }
         s.append(" battlefield=[").append(String.join("; ", b)).append("]");
+        List<String> gy = new ArrayList<>(), ex = new ArrayList<>();
+        for (Card c : me.getCardsIn(ZoneType.Graveyard)) if (c.isLand() || c.isInstant() || c.isSorcery()) gy.add(c.getName());
+        for (Card c : me.getCardsIn(ZoneType.Exile)) ex.add(c.getName());
+        java.util.Collections.sort(gy); java.util.Collections.sort(ex);
+        s.append(" gy=[").append(String.join("; ", gy)).append("] exile=[").append(String.join("; ", ex)).append("]");
+        s.append(" usb=[").append(board(me)).append("]");
         Player op = ProwessBrain.opponent(me);
         if (op != null) s.append(" opp=[").append(board(op)).append("]");
         String snap = s.toString();
@@ -385,7 +391,7 @@ public class LandfallBrain {
         if (sa.isLandAbility()) return "play land " + n;
         String d = sa.getDescription() == null ? "" : sa.getDescription().replace("\n", " ");
         if (d.length() > 70) d = d.substring(0, 70);
-        return (sa.isSpell() ? "cast " : "activate ") + n + (sa.isSpell() ? "" : " (" + d + ")");
+        return (sa.isSpell() ? "cast " : "activate ") + n + (sa.isSpell() ? (isWarp(sa) ? " (warp)" : "") : " (" + d + ")");
     }
 
     /**
