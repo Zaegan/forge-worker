@@ -38,7 +38,12 @@ public class ProwessBrain {
             CRAB = "Eddymurk Crab", STAFF = "Wizard's Staff", BURST = "Burst Lightning", SEAR = "Sear",
             LEYLINE = "Leyline of Resonance";
 
-    static boolean ON() { return AiTweaks.TWEAKS.contains("prowessplan"); }
+    /** "prowessplan" (every player) or "prowessplan@NAME" (only the deck named *NAME*: AiTweaks.on) */
+    static boolean ON(Player me) { return AiTweaks.on("prowessplan", me) || V2(me); }
+    /** prowessplan2 (2026-10-23, from the agent games vs the meta Izzet Prowess list): prowessplan, plus Unsummon on a
+     *  blocker and Wild Ride (+3/+0 on one attacker) in the lethal search */
+    static boolean V2(Player me) { return AiTweaks.on("prowessplan2", me); }
+    static final String UNSUMMON = "Unsummon", WILDRIDE = "Wild Ride";
 
     static Game deckGame; static Player deckFor; static boolean deckIs;
 
@@ -102,7 +107,7 @@ public class ProwessBrain {
 
     /** one castable spell of ours that the search may use */
     static class Sp {
-        SpellAbility sa; int cost; int dmg; boolean face, creature;
+        SpellAbility sa; int cost; int dmg; boolean face, creature; int pump;   // pump: +power on one of our attackers
         String name() { return sa.getHostCard().getName(); }
     }
 
@@ -123,6 +128,8 @@ public class ProwessBrain {
             String n = sa.getHostCard().getName();
             if (n.equals(BURST)) { s.dmg = 2; s.face = true; s.creature = true; }
             else if (n.equals(SEAR)) { s.dmg = 4; s.creature = true; }
+            else if (V2(me) && n.equals(UNSUMMON)) { s.dmg = 99; s.creature = true; }   // bounces any blocker
+            else if (V2(me) && n.equals(WILDRIDE)) { s.pump = 3; }
             else if (AiTweaks.targets(sa)) continue;   // other targeted spells (Spell Pierce, Heroes' Hangout): not in the search
             out.add(s);
         }
@@ -148,9 +155,13 @@ public class ProwessBrain {
 
     /** worst-case damage of a line: the opponent blocks to stop the most damage */
     static long damage(Player me, List<Card> attackers, List<Card> blockers, int k, int burnFace, int crabTaps) {
+        return damage(me, attackers, blockers, k, burnFace, crabTaps, new long[attackers.size()]);
+    }
+
+    static long damage(Player me, List<Card> attackers, List<Card> blockers, int k, int burnFace, int crabTaps, long[] extra) {
         List<long[]> att = new ArrayList<>();   // [index, power]
         for (int i = 0; i < attackers.size(); i++)
-            att.add(new long[]{i, Math.max(0, attackers.get(i).getNetPower() + (long) k * perSpell(attackers.get(i)))});
+            att.add(new long[]{i, Math.max(0, attackers.get(i).getNetPower() + (long) k * perSpell(attackers.get(i)) + extra[i])});
         att.sort((x, y) -> Long.compare(y[1], x[1]));
         // Crab taps the two blockers that could stop the most damage: approximated by the blockers able to block the
         // most of our attackers
@@ -207,14 +218,31 @@ public class ProwessBrain {
                         if (tg.get(i) == op) face += burns.get(i).dmg;
                         else left.remove((Card) tg.get(i));
                     }
-                    long dmg = damage(me, attackers, left, set.size(), face, crabUse * 2);
+                    List<Sp> pumps = new ArrayList<>();
+                    for (Sp s : set) if (s.pump > 0) pumps.add(s);
+                    if (!pumps.isEmpty() && attackers.isEmpty()) continue;
+                    int combos = 1;
+                    for (int q = 0; q < pumps.size(); q++) combos *= attackers.size();
+                    long dmg = -1; int bestCombo = 0;
+                    for (int cmb = 0; cmb < Math.min(combos, 500); cmb++) {
+                        long[] extra = new long[attackers.size()];
+                        int r = cmb;
+                        for (Sp s : pumps) { extra[r % attackers.size()] += s.pump; r /= attackers.size(); }
+                        long d = damage(me, attackers, left, set.size(), face, crabUse * 2, extra);
+                        if (d > dmg) { dmg = d; bestCombo = cmb; }
+                    }
                     if (dmg < life) continue;
                     int total = cost + crabCost;
                     if (best == null || total < best.cost || (total == best.cost && set.size() < best.spells.size())) {
                         best = new Line(); best.spells = set; best.crab = crabUse == 1; best.cost = total; best.dmg = dmg;
                         best.targets = new ArrayList<>();
                         int bi = 0;
-                        for (Sp s : set) best.targets.add(s.dmg > 0 ? tg.get(bi++) : null);
+                        int r = bestCombo;
+                        for (Sp s : set) {
+                            if (s.dmg > 0) best.targets.add(tg.get(bi++));
+                            else if (s.pump > 0) { best.targets.add(attackers.get(r % attackers.size())); r /= attackers.size(); }
+                            else best.targets.add(null);
+                        }
                     }
                 }
             }
@@ -238,7 +266,7 @@ public class ProwessBrain {
 
     static SpellAbility choose(Player me) {
         Game g = me.getGame();
-        if (!ON() || !g.getStack().isEmpty() || !deck(me)) return null;
+        if (!ON(me) || !g.getStack().isEmpty() || !deck(me)) return null;
         Player op = opponent(me);
         if (op == null) return null;
         PhaseType ph = g.getPhaseHandler().getPhase();
@@ -254,8 +282,9 @@ public class ProwessBrain {
         Sp next = null; GameObject nt = null;
         for (int i = 0; i < l.spells.size(); i++) {
             Sp s = l.spells.get(i); GameObject t = l.targets.get(i);
-            boolean onBlocker = t != null && t != op;
-            if (next == null || (onBlocker && !(nt != null && nt != op)) || (onBlocker == (nt != null && nt != op) && s.cost < next.cost)) {
+            boolean onBlocker = t instanceof Card && ((Card) t).getController() != me;
+            boolean ntBlocker = nt instanceof Card && ((Card) nt).getController() != me;
+            if (next == null || (onBlocker && !ntBlocker) || (onBlocker == ntBlocker && s.cost < next.cost)) {
                 next = s; nt = t;
             }
         }
@@ -302,7 +331,7 @@ public class ProwessBrain {
 
     /** set-up mode on our turn: veto instant cantrips (held for their end step), burn at the face, Eddymurk Crab */
     static List<SpellAbility> post(Player me, List<SpellAbility> ai) {
-        if (!ON() || ai == null || ai.isEmpty() || !deck(me)) return ai;
+        if (!ON(me) || ai == null || ai.isEmpty() || !deck(me)) return ai;
         Game g = me.getGame();
         if (!g.getPhaseHandler().isPlayerTurn(me)) return ai;
         for (SpellAbility sa : ai) {
@@ -318,7 +347,7 @@ public class ProwessBrain {
 
     static void forceAttack(Player me, Combat combat) {
         Game g = me.getGame();
-        if (!ON() || plannedGame != g || plannedTurn != g.getPhaseHandler().getTurn()) return;
+        if (!ON(me) || plannedGame != g || plannedTurn != g.getPhaseHandler().getTurn()) return;
         Player op = opponent(me);
         for (Card c : planned)
             if (c.isInPlay() && c.getController() == me && !combat.isAttacking(c) && CombatUtil.canAttack(c, op)) {

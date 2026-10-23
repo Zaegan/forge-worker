@@ -36,7 +36,7 @@ import java.util.List;
  * simhybrid / simfull — the Izzet Leyline player uses Forge's simulation (search) AI, hybrid or full.
  * spendmana — when Forge's AI would pass in our main phase 2, cast the most expensive castable creature in hand.
  * flasheot — at the opponent's end step, cast the most expensive castable flash creature in hand.
- * Scoping (2026-10-13): spendmana, flasheot, prowesspre, equipidle and lordtarget may be written "rule@NAME" to act --
+ * Scoping (2026-10-13): spendmana, flasheot, prowesspre, equipidle, lordtarget and prowessplan (2026-10-23) may be written "rule@NAME" to act --
  *   and run their checks -- only for the player whose deck name contains NAME (see on()).
  * prowesspre — in our main 1, with an untapped prowess creature able to attack, cast cheap untargeted spells first.
  * reckless=NAME — the player whose deck name contains NAME uses Forge's Reckless AI profile (aggressive attacks).
@@ -174,6 +174,9 @@ public class AiTweaks {
                 simChecked = true;
                 if ((TWEAKS.contains("simhybrid") || TWEAKS.contains("simfull")) && LeylineBrain.deck(getPlayer()))
                     getAi().setUseSimulation(TWEAKS.contains("simfull") ? forge.ai.AIOption.USE_FULL_SIMULATION : forge.ai.AIOption.USE_HYBRID_SIMULATION);
+                // simdeck@NAME / simdeckfull@NAME (2026-10-23, meta pilots): the same for the deck named *NAME*
+                else if (on("simdeck", getPlayer()) || on("simdeckfull", getPlayer()))
+                    getAi().setUseSimulation(on("simdeckfull", getPlayer()) ? forge.ai.AIOption.USE_FULL_SIMULATION : forge.ai.AIOption.USE_HYBRID_SIMULATION);
             }
             if (on("flashhold", getPlayer())) {
                 ManaHold.planFlash(getPlayer());
@@ -190,7 +193,7 @@ public class AiTweaks {
                 SpellAbility d = dwarvesEtb(getPlayer());
                 if (d != null) return List.of(d);
             }
-            if (TWEAKS.contains("prowessplan")) {
+            if (ProwessBrain.ON(getPlayer())) {
                 SpellAbility pw = ProwessBrain.choose(getPlayer());
                 if (pw != null) return List.of(pw);
             }
@@ -222,18 +225,18 @@ public class AiTweaks {
                 if (ControlBrain.holdUntilMain(getPlayer())) return null;
                 SpellAbility mine = ControlBrain.choose(getAi(), getPlayer());
                 if (mine != null) return List.of(mine);
-                List<SpellAbility> ai = super.chooseSpellAbilityToPlay();
+                List<SpellAbility> ai = aiChoose();
                 if (ai != null && ai.stream().anyMatch(ControlBrain::vetoed)) {
                     ControlBrain.count("hall_veto");
                     return null;
                 }
                 ai = TWEAKS.contains("leyline") ? LeylineBrain.post(getPlayer(), ai) : ai;
-                ai = TWEAKS.contains("prowessplan") ? ProwessBrain.post(getPlayer(), ai) : ai;
+                ai = ProwessBrain.ON(getPlayer()) ? ProwessBrain.post(getPlayer(), ai) : ai;
                 return spendIfIdle(getPlayer(), ai);
             }
-            List<SpellAbility> ai = super.chooseSpellAbilityToPlay();
+            List<SpellAbility> ai = aiChoose();
             ai = TWEAKS.contains("leyline") ? LeylineBrain.post(getPlayer(), ai) : ai;
-            ai = TWEAKS.contains("prowessplan") ? ProwessBrain.post(getPlayer(), ai) : ai;
+            ai = ProwessBrain.ON(getPlayer()) ? ProwessBrain.post(getPlayer(), ai) : ai;
             if (on("edgargrow", getPlayer()) && ai != null && !ai.isEmpty() && holdForEdgar(getPlayer(), ai.get(0))) {
                 ControlBrain.count("edgargrow_pass");
                 return null;
@@ -245,6 +248,30 @@ public class AiTweaks {
                 return null;
             }
             return spendIfIdle(getPlayer(), ai);
+        }
+
+        /** Forge's own choice. With the simulation AI on (simdeck), a failure inside its game copier (Forge 2.0.15:
+         *  GameCopier -> StaticAbilityContinuous IndexOutOfBounds on a MayPlayPlayer static; the real game is untouched)
+         *  falls back to the ordinary AI for this one decision instead of ending the game as an error draw. */
+        List<SpellAbility> aiChoose() {
+            return simSafe(() -> super.chooseSpellAbilityToPlay());
+        }
+
+        <T> T simSafe(java.util.function.Supplier<T> call) {
+            try {
+                return call.get();
+            } catch (RuntimeException e) {
+                forge.ai.AIOption m = getAi().usesFullSimulation() ? forge.ai.AIOption.USE_FULL_SIMULATION
+                        : getAi().usesHybridSimulation() ? forge.ai.AIOption.USE_HYBRID_SIMULATION : null;
+                if (m == null) throw e;
+                ControlBrain.count("sim_fallback");
+                getAi().setUseSimulation(null);
+                try {
+                    return call.get();
+                } finally {
+                    getAi().setUseSimulation(m);
+                }
+            }
         }
 
         @Override
@@ -287,7 +314,7 @@ public class AiTweaks {
             super.declareAttackers(attacker, combat);
             if (TWEAKS.contains("protect")) ProtectBrain.holdTamBack(getPlayer(), combat);
             if (TWEAKS.contains("leyline")) LeylineBrain.forceAttack(getPlayer(), combat);
-            if (TWEAKS.contains("prowessplan")) ProwessBrain.forceAttack(getPlayer(), combat);
+            if (ProwessBrain.ON(getPlayer())) ProwessBrain.forceAttack(getPlayer(), combat);
         }
 
         @Override
@@ -300,7 +327,7 @@ public class AiTweaks {
                     return new forge.game.cost.CostPayment(cost, sa).payComputerCosts(new forge.ai.AiCostDecision(getPlayer(), sa, false));
                 }
             }
-            return super.payCostToPreventEffect(cost, sa, alreadyPaid, allPayers);
+            return simSafe(() -> super.payCostToPreventEffect(cost, sa, alreadyPaid, allPayers));
         }
     }
 

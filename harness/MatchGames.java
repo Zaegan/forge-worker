@@ -344,6 +344,7 @@ public class MatchGames {
                         + ":{\"depth\":0,\"disturbed\":true,\"technique_bottomed\":0}},\"searched\":{},\"deployed\":{}"
                         + ",\"cards\":{" + ToyGames.q(nameA) + ":[]," + ToyGames.q(nameB) + ":[]},\"hung\":true}";
             } else if (err[0] != null) {
+                if (!System.getProperty("forge.sim.trace", "").isEmpty()) err[0].printStackTrace();   // -Dforge.sim.trace=1: the error's stack on stderr
                 game.setGameOver(GameEndReason.Draw);
                 end = "error:" + err[0].getClass().getSimpleName();
             } else end = work.capped ? "cap" : "finished";
