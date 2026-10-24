@@ -128,7 +128,7 @@ public class ProtectBrain {
 
     static SpellAbility choose(Player me) {
         Game g = me.getGame();
-        SpellAbility pc = AiTweaks.TWEAKS.contains("prepare") ? preparedCopy(me) : null;  // off unless tweak "prepare"
+        SpellAbility pc = AiTweaks.has("prepare") ? preparedCopy(me) : null;  // off unless tweak "prepare"
         if (pc != null) return pc;
         SpellAbility d = discardFirst(me);
         if (d != null) return d;
@@ -165,7 +165,7 @@ public class ProtectBrain {
                 List<Card> pool = new ArrayList<>();
                 for (Card c : sweeper ? me.getCreaturesInPlay() : targeted) if (!hasFerocity(c)) pool.add(c);
                 // tweak "ooze": an indestructible creature survives destroy and damage anyway; don't spend Ferocity on it
-                if (AiTweaks.TWEAKS.contains("ooze")) pool.removeIf(c -> c.hasKeyword(forge.game.keyword.Keyword.INDESTRUCTIBLE));
+                if (AiTweaks.has("ooze")) pool.removeIf(c -> c.hasKeyword(forge.game.keyword.Keyword.INDESTRUCTIBLE));
                 Card t = best(pool);
                 SpellAbility f = t == null ? null : ferocityOn(me, t);
                 if (f != null) {
@@ -182,15 +182,15 @@ public class ProtectBrain {
         // tweak "oozeeot" (implies the above): the same, plus the normal end-of-turn cast, on a creature that is not
         // indestructible (with the Ooze in play that is a second creature that survives a board wipe, and it uses mana
         // that would otherwise go unspent)
-        if (haveFerocity && AiTweaks.TWEAKS.contains("ooze")) {
+        if (haveFerocity && AiTweaks.has("ooze")) {
             SpellAbility trick = oozeTrick(me);
-            if (trick != null || !AiTweaks.TWEAKS.contains("oozeeot")) return trick;
+            if (trick != null || !AiTweaks.has("oozeeot")) return trick;
         }
         // opponent's end step, empty stack: put Ferocity on our best creature without one
         if (haveFerocity && !g.getPhaseHandler().isPlayerTurn(me) && g.getPhaseHandler().getPhase() == PhaseType.END_OF_TURN) {
             List<Card> pool = new ArrayList<>();
             for (Card c : me.getCreaturesInPlay()) if (!hasFerocity(c)) pool.add(c);
-            if (AiTweaks.TWEAKS.contains("ooze")) pool.removeIf(c -> c.hasKeyword(forge.game.keyword.Keyword.INDESTRUCTIBLE));
+            if (AiTweaks.has("ooze")) pool.removeIf(c -> c.hasKeyword(forge.game.keyword.Keyword.INDESTRUCTIBLE));
             Card t = best(pool);
             SpellAbility f = t == null ? null : ferocityOn(me, t);
             if (f != null) {
@@ -251,7 +251,7 @@ public class ProtectBrain {
     }
 
     static SpellAbility ferocityOn(Player me, Card target) {
-        if (AiTweaks.TWEAKS.contains("manahold")) ManaHold.release(me);  // the held lands pay for it
+        if (AiTweaks.has("manahold")) ManaHold.release(me);  // the held lands pay for it
         CardCollection hand = new CardCollection();
         for (Card c : me.getCardsIn(ZoneType.Hand)) if (named(c, FEROCITY)) hand.add(c);
         for (SpellAbility sa : ComputerUtilAbility.getSpellAbilities(hand, me)) {

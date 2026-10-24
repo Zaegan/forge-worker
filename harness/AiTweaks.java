@@ -90,6 +90,19 @@ public class AiTweaks {
      */
     static final String FIELD_RULES = "reckless=Dwarves,equipidle@Dwarves,dwarvesetb2@Dwarves";
     static final String TWEAKS = withField(withoutWorkCap(System.getProperty("forge.sim.tweaks", "")));
+    /** the rule NAMES of the tweaks: each token without its "@DECK" scope (2026-10-23: legacy switches were matched with
+     *  TWEAKS.contains, so "landfall" was on in every "landseqN@mono_green_landfall" setting through the deck name, and
+     *  "control" would be on for any setting naming 4c_control). Substrings of names still match as before ("oozeeot"
+     *  contains "ooze", "leylinemull" contains "leyline"); deck names never do. */
+    static final String NAMES = String.join(",", java.util.Arrays.stream(TWEAKS.split(",")).map(x -> x.trim().split("@", 2)[0])
+            .toArray(String[]::new));
+
+    /** a legacy switch: NAME occurs in a rule name. Every landseq pilot keeps the Escape Tunnel rules ("landfall") it has
+     *  always run with (until 2026-10-23 they were on through the deck name). */
+    static boolean has(String name) {
+        if (name.equals("landfall") && NAMES.contains("landseq")) return true;
+        return NAMES.contains(name);
+    }
 
     /** The work cap ("workcap=..." in the tweaks, MatchGames.WorkMeter) is a game setting, not an AI rule: AI players
      *  never see it, so a campaign with only a work cap plays Forge's stock AI exactly as one with no tweaks. */
@@ -186,8 +199,8 @@ public class AiTweaks {
             checkProfile();
             if (!simChecked) {   // simhybrid / simfull: Forge's search-based AI, for the Izzet Leyline player only
                 simChecked = true;
-                if ((TWEAKS.contains("simhybrid") || TWEAKS.contains("simfull")) && LeylineBrain.deck(getPlayer()))
-                    getAi().setUseSimulation(TWEAKS.contains("simfull") ? forge.ai.AIOption.USE_FULL_SIMULATION : forge.ai.AIOption.USE_HYBRID_SIMULATION);
+                if ((has("simhybrid") || has("simfull")) && LeylineBrain.deck(getPlayer()))
+                    getAi().setUseSimulation(has("simfull") ? forge.ai.AIOption.USE_FULL_SIMULATION : forge.ai.AIOption.USE_HYBRID_SIMULATION);
                 // simdeck@NAME / simdeckfull@NAME (2026-10-23, meta pilots): the same for the deck named *NAME*
                 else if (on("simdeck", getPlayer()) || on("simdeckfull", getPlayer()))
                     getAi().setUseSimulation(on("simdeckfull", getPlayer()) ? forge.ai.AIOption.USE_FULL_SIMULATION : forge.ai.AIOption.USE_HYBRID_SIMULATION);
@@ -215,27 +228,27 @@ public class AiTweaks {
                 SpellAbility pp = prowessPrecombat(getPlayer());
                 if (pp != null) return List.of(pp);
             }
-            if (TWEAKS.contains("manahold")) ManaHold.plan(getPlayer());
-            if (TWEAKS.contains("spiderham")) {
+            if (has("manahold")) ManaHold.plan(getPlayer());
+            if (has("spiderham")) {
                 SpellAbility bite = spiderHamBite(getPlayer());
                 if (bite != null) {
                     bites++;
                     return List.of(bite);
                 }
             }
-            if (TWEAKS.contains("leyline")) {
+            if (has("leyline")) {
                 SpellAbility l = LeylineBrain.choose(getPlayer());
                 if (l != null) return List.of(l);
             }
-            if (TWEAKS.contains("landfall")) {
+            if (has("landfall")) {
                 SpellAbility s = LandfallBrain.choose(getPlayer());
                 if (s != null) return List.of(s);
             }
-            if (TWEAKS.contains("protect")) {
+            if (has("protect")) {
                 SpellAbility p = ProtectBrain.choose(getPlayer());
                 if (p != null) return List.of(p);
             }
-            if (TWEAKS.contains("control")) {
+            if (has("control")) {
                 if (ControlBrain.holdUntilMain(getPlayer())) return null;
                 SpellAbility mine = ControlBrain.choose(getAi(), getPlayer());
                 if (mine != null) return List.of(mine);
@@ -244,12 +257,12 @@ public class AiTweaks {
                     ControlBrain.count("hall_veto");
                     return null;
                 }
-                ai = TWEAKS.contains("leyline") ? LeylineBrain.post(getPlayer(), ai) : ai;
+                ai = has("leyline") ? LeylineBrain.post(getPlayer(), ai) : ai;
                 ai = ProwessBrain.ON(getPlayer()) ? ProwessBrain.post(getPlayer(), ai) : ai;
                 return spendIfIdle(getPlayer(), ai);
             }
             List<SpellAbility> ai = aiChoose();
-            ai = TWEAKS.contains("leyline") ? LeylineBrain.post(getPlayer(), ai) : ai;
+            ai = has("leyline") ? LeylineBrain.post(getPlayer(), ai) : ai;
             ai = ProwessBrain.ON(getPlayer()) ? ProwessBrain.post(getPlayer(), ai) : ai;
             ai = on("landseq", getPlayer()) ? LandfallBrain.seq(getPlayer(), ai) : ai;
             ai = LandfallBrain.seqOn(getPlayer()) ? LandfallBrain.seq2(getPlayer(), ai) : ai;
@@ -294,7 +307,7 @@ public class AiTweaks {
 
         @Override
         public boolean playTrigger(Card host, forge.game.trigger.WrappedAbility wa, boolean isMandatory) {
-            if (TWEAKS.contains("landfall")) {
+            if (has("landfall")) {
                 Boolean r = LandfallBrain.playTrigger(getPlayer(), wa);
                 if (r != null) {
                     if (r && on("lfaudit", getPlayer())) LandfallBrain.auditTrigger(getPlayer(), wa);
@@ -317,7 +330,7 @@ public class AiTweaks {
                 List<SpellAbility> o16 = LandfallBrain.order16(getPlayer(), sas);
                 if (o16 != null) return o16;
             }
-            if (TWEAKS.contains("landfall")) {
+            if (has("landfall")) {
                 List<SpellAbility> o = LandfallBrain.order(getPlayer(), sas);
                 if (o != null) return o;
             }
@@ -327,7 +340,7 @@ public class AiTweaks {
         @Override
         public boolean mulliganKeepHand(Player firstPlayer, int cardsToReturn) {
             checkProfile();
-            if (TWEAKS.contains("leylinemull") && LeylineBrain.deck(getPlayer()))
+            if (has("leylinemull") && LeylineBrain.deck(getPlayer()))
                 return LeylineBrain.keepHand(getPlayer(), cardsToReturn);
             return super.mulliganKeepHand(firstPlayer, cardsToReturn);
         }
@@ -335,15 +348,15 @@ public class AiTweaks {
         @Override
         public forge.game.card.CardCollectionView tuckCardsViaMulligan(forge.game.card.CardCollectionView hand, int n) {
             forge.game.card.CardCollectionView out = super.tuckCardsViaMulligan(hand, n);
-            if (TWEAKS.contains("leylinemull") && LeylineBrain.deck(getPlayer())) return LeylineBrain.tuck(hand, out, n);
+            if (has("leylinemull") && LeylineBrain.deck(getPlayer())) return LeylineBrain.tuck(hand, out, n);
             return out;
         }
 
         @Override
         public void declareAttackers(Player attacker, forge.game.combat.Combat combat) {
             super.declareAttackers(attacker, combat);
-            if (TWEAKS.contains("protect")) ProtectBrain.holdTamBack(getPlayer(), combat);
-            if (TWEAKS.contains("leyline")) LeylineBrain.forceAttack(getPlayer(), combat);
+            if (has("protect")) ProtectBrain.holdTamBack(getPlayer(), combat);
+            if (has("leyline")) LeylineBrain.forceAttack(getPlayer(), combat);
             if (ProwessBrain.ON(getPlayer())) ProwessBrain.forceAttack(getPlayer(), combat);
             if (LandfallBrain.v3On(getPlayer())) LandfallBrain.attack3(getPlayer(), combat);
             if (on("landseq10", getPlayer())) LandfallBrain.ouroAttack(getPlayer(), combat);
@@ -364,7 +377,7 @@ public class AiTweaks {
         @Override
         public boolean payCostToPreventEffect(forge.game.cost.Cost cost, SpellAbility sa, boolean alreadyPaid,
                                               forge.util.collect.FCollectionView<Player> allPayers) {
-            if (TWEAKS.contains("control")) {
+            if (has("control")) {
                 Boolean pay = ControlBrain.payShock(cost, sa, getPlayer());
                 if (pay != null) {
                     if (!pay || !ComputerUtilCost.canPayCost(cost, sa, getPlayer(), false)) return false;

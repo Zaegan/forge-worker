@@ -223,7 +223,7 @@ public class LeylineBrain {
                 .filter(c -> c.isLand() && c.isUntapped() && !c.getManaAbilities().isEmpty()).count();
         if (ph == PhaseType.MAIN2) {
             SpellAbility b = burn(me, op);
-            if (b == null && AiTweaks.TWEAKS.contains("leydig")) b = dig(me, mana);
+            if (b == null && AiTweaks.has("leydig")) b = dig(me, mana);
             return b;
         }
         if (ph == PhaseType.MAIN1) {
@@ -231,7 +231,7 @@ public class LeylineBrain {
             List<Card> attackers = new ArrayList<>();
             for (Card c : me.getCreaturesInPlay()) if (canAttackNow(c)) attackers.add(c);
             for (Card c : attackers) if (unblockable(c, op)) other += c.getNetPower();
-            boolean burnLater = AiTweaks.TWEAKS.contains("leyburn") && burnInHand(me);
+            boolean burnLater = AiTweaks.has("leyburn") && burnInHand(me);
             for (Card t : attackers) {
                 boolean free = unblockable(t, op);
                 List<Step> avail = pumps(me, t, false);
@@ -262,7 +262,7 @@ public class LeylineBrain {
                 return next(p, t);
             }
             if (PLAN()) planAttacks(me, op, mana);
-            return AiTweaks.TWEAKS.contains("leylinespend") ? spend(me, op, ph, mana) : null;
+            return AiTweaks.has("leylinespend") ? spend(me, op, ph, mana) : null;
         }
         if (ph == PhaseType.COMBAT_DECLARE_BLOCKERS && PLAN()) {
             SpellAbility k = killBlocker(me, op, mana);
@@ -287,7 +287,7 @@ public class LeylineBrain {
                 ControlBrain.count("leyline_blockers");
                 return next(p, t);
             }
-            if (AiTweaks.TWEAKS.contains("leylinespend")) return spend(me, op, ph, mana);
+            if (AiTweaks.has("leylinespend")) return spend(me, op, ph, mana);
         }
         return null;
     }
@@ -445,7 +445,7 @@ public class LeylineBrain {
      * when a toughness pump allows). With more, pumps are held (evasion only: Otter, Pym) unless we are dead next turn.
      * At the opponent's end step, instant removal takes out a walling blocker. Burn Together only on a walling blocker
      * or for lethal; Forge's own pump choices are vetoed (our plans spend pumps). */
-    static boolean PLAN() { return AiTweaks.TWEAKS.contains("leyplan"); }
+    static boolean PLAN() { return AiTweaks.has("leyplan"); }
 
     static final java.util.Map<Integer, Boolean> seenOpp = new java.util.HashMap<>();   // opponent creature id -> flier
     static Game seenGame;
@@ -631,13 +631,13 @@ public class LeylineBrain {
                     return null;
                 }
             }
-        if (AiTweaks.TWEAKS.contains("leyburn") && mine && ph == PhaseType.MAIN1)
+        if (AiTweaks.has("leyburn") && mine && ph == PhaseType.MAIN1)
             for (SpellAbility sa : ai)
                 if (sa.getHostCard() != null && named(sa.getHostCard(), SELLSWORD) && sa.isAdventure()) {
                     ControlBrain.count("leyline_burn_veto");
                     return null;
                 }
-        if (AiTweaks.TWEAKS.contains("leyland") && mine && ai.size() == 1 && ai.get(0).isLandAbility()) {
+        if (AiTweaks.has("leyland") && mine && ai.size() == 1 && ai.get(0).isLandAbility()) {
             SpellAbility better = betterLand(me, ai.get(0));
             if (better != null) {
                 ControlBrain.count("leyline_land_swap");
@@ -773,7 +773,7 @@ public class LeylineBrain {
                 if (st.cost > surplus) continue;
                 if (ph == PhaseType.MAIN1) {
                     boolean otterPump = false;
-                    if (!free && named(t, OTTER) && AiTweaks.TWEAKS.contains("leyotter") && !st.name.equals(PYM)
+                    if (!free && named(t, OTTER) && AiTweaks.has("leyotter") && !st.name.equals(PYM)
                             && (SPEND_MAIN1.contains(st.name) || SPEND_COMBAT.contains(st.name))) {
                         // Elusive Otter: creatures with less power can't block it, and it has prowess, so the pump
                         // itself can be the evasion (v2.3 games 33, 909: it waited at home holding pumps)
