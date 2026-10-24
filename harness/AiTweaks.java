@@ -60,6 +60,7 @@ import java.util.List;
  * landfall — LandfallBrain's Escape Tunnel + Mightform Harmonizer kill for Mono-Green Landfall.
  * lftrace@NAME — LandfallBrain.trace: state snapshots at our main-phase decisions (for agent scoring), changes nothing.
  * lfaudit@NAME — LandfallBrain.audit: counts Landfall misplays (mis_*), changes nothing.
+ * landseq17@NAME — landseq7 + landseq5 Resolve fix + doublings last (the z>=1.0 bundle).
  * landseq16@NAME — landseq14 + Harmonizer doublings resolve after our other landfall triggers.
  * landseq14/15@NAME — landseq11 with the Ba Sing Se ability fix / + crack-back check that defers to Forge's lethal judgement.
  * landseq11/12/13@NAME — landseq9 + fixes / + crack-back check (act only if it saves us) / + keep all home when doomed.
@@ -312,7 +313,7 @@ public class AiTweaks {
 
         @Override
         public List<SpellAbility> orderSimultaneousSa(List<SpellAbility> sas) {
-            if (on("landseq16", getPlayer())) {
+            if (on("landseq16", getPlayer()) || on("landseq17", getPlayer())) {
                 List<SpellAbility> o16 = LandfallBrain.order16(getPlayer(), sas);
                 if (o16 != null) return o16;
             }

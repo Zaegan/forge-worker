@@ -533,13 +533,13 @@ public class LandfallBrain {
 
     /** every landseq version that runs seq2 (2026-10-23: one helper instead of a growing chain of flags) */
     static boolean seqOn(Player p) {
-        for (int v = 2; v <= 16; v++) if (AiTweaks.on("landseq" + v, p)) return true;
+        for (int v = 2; v <= 17; v++) if (AiTweaks.on("landseq" + v, p)) return true;
         return false;
     }
 
     /** landseq3 and later (lethal mode, safe attacks, trigger aiming) */
     static boolean v3On(Player p) {
-        for (int v = 3; v <= 16; v++) if (AiTweaks.on("landseq" + v, p)) return true;
+        for (int v = 3; v <= 17; v++) if (AiTweaks.on("landseq" + v, p)) return true;
         return false;
     }
 
@@ -769,7 +769,8 @@ public class LandfallBrain {
         boolean v10 = AiTweaks.on("landseq10", me);
         boolean v9 = v10 || v11 || AiTweaks.on("landseq9", me);
         boolean v8 = v9 || AiTweaks.on("landseq8", me);
-        boolean v7 = v8 || AiTweaks.on("landseq7", me);
+        boolean v17 = AiTweaks.on("landseq17", me);   // landseq7 + the z>=1.0 bundle: landseq5's Resolve fix and doublings last
+        boolean v7 = v8 || v17 || AiTweaks.on("landseq7", me);
         boolean v6 = v7 || AiTweaks.on("landseq6", me);
         boolean v5 = v6 || AiTweaks.on("landseq5", me);
         boolean v4 = v5 || AiTweaks.on("landseq4", me);
@@ -810,7 +811,7 @@ public class LandfallBrain {
                 Card h = sa.getHostCard();
                 if (h.isLand() || isWarp(sa)) continue;
                 if (!(h.isCreature() || h.isArtifact() || h.isEnchantment())) continue;   // permanents (Worldwagon, creatures)
-                if (v11 && named(h, RESOLVE) && !resolveUseful(me)) continue;           // landseq11: landseq5 cast useless Resolves
+                if ((v11 || v17) && named(h, RESOLVE) && !resolveUseful(me)) continue;  // landseq11/17: landseq5 cast useless Resolves
                 if (best == null || h.getCMC() > best.getHostCard().getCMC()) best = sa;
             }
             if (best != null) { ControlBrain.count("landseq5_spell_before_basingse"); return List.of(best); }
@@ -866,6 +867,9 @@ public class LandfallBrain {
      * landseq8@NAME — landseq7 + Meltstrider's Resolve only when its fight kills (resolveUseful).
  * landseq9@NAME — landseq8 + block reassignment (fixBlocks).
  * landseq10@NAME — landseq9 + the Ouroboroid crack-back (ouroThreat: attacks and Ba Sing Se payments).
+ * landseq17@NAME — the bundle (user, 2026-10-23: "bundle at 1.0 and greater"): landseq7 + landseq5 casts no useless Resolve
+ *  (landseq11, z 2.04) + Harmonizer doublings last (landseq16, z 1.46). Not: Resolve check (0.58), block moves (0.38),
+ *  Ba Sing Se ability fix (-0.17), crack-back (-0.47).
  * landseq16@NAME — landseq14 + Harmonizer doublings resolve after our other landfall triggers (order16).
  * landseq14@NAME — landseq11 with the Ba Sing Se check meaning its activated ability only (not playing the land).
  * landseq15@NAME — landseq14 + crack-back check that never stops an attack Forge judges lethal (forgeThinksLethal),
