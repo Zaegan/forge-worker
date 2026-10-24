@@ -517,7 +517,7 @@ public class LandfallBrain {
         boolean fetchGivesMana = named(f.getHostCard(), PASSAGE) && lands >= 3;
         boolean need = false;
         boolean v8 = false;
-        for (int v = 8; v <= 15; v++) v8 |= AiTweaks.on("landseq" + v, me);
+        for (int v = 8; v <= 16; v++) v8 |= AiTweaks.on("landseq" + v, me);
         for (Card c : me.getCardsIn(ZoneType.Hand)) {
             if (c.isLand()) continue;
             if (v8 && named(c, RESOLVE) && !resolveUseful(me)) continue;   // landseq8: a useless Resolve needs no mana
@@ -533,13 +533,13 @@ public class LandfallBrain {
 
     /** every landseq version that runs seq2 (2026-10-23: one helper instead of a growing chain of flags) */
     static boolean seqOn(Player p) {
-        for (int v = 2; v <= 15; v++) if (AiTweaks.on("landseq" + v, p)) return true;
+        for (int v = 2; v <= 16; v++) if (AiTweaks.on("landseq" + v, p)) return true;
         return false;
     }
 
     /** landseq3 and later (lethal mode, safe attacks, trigger aiming) */
     static boolean v3On(Player p) {
-        for (int v = 3; v <= 15; v++) if (AiTweaks.on("landseq" + v, p)) return true;
+        for (int v = 3; v <= 16; v++) if (AiTweaks.on("landseq" + v, p)) return true;
         return false;
     }
 
@@ -763,7 +763,7 @@ public class LandfallBrain {
     static List<SpellAbility> seq2(Player me, List<SpellAbility> ai) {
         Game g = me.getGame();
         boolean v15 = AiTweaks.on("landseq15", me);
-        boolean v14 = v15 || AiTweaks.on("landseq14", me);
+        boolean v14 = v15 || AiTweaks.on("landseq14", me) || AiTweaks.on("landseq16", me);
         boolean v13 = AiTweaks.on("landseq13", me), v12 = AiTweaks.on("landseq12", me);
         boolean v11 = v12 || v13 || v14 || AiTweaks.on("landseq11", me);
         boolean v10 = AiTweaks.on("landseq10", me);
@@ -866,6 +866,7 @@ public class LandfallBrain {
      * landseq8@NAME — landseq7 + Meltstrider's Resolve only when its fight kills (resolveUseful).
  * landseq9@NAME — landseq8 + block reassignment (fixBlocks).
  * landseq10@NAME — landseq9 + the Ouroboroid crack-back (ouroThreat: attacks and Ba Sing Se payments).
+ * landseq16@NAME — landseq14 + Harmonizer doublings resolve after our other landfall triggers (order16).
  * landseq14@NAME — landseq11 with the Ba Sing Se check meaning its activated ability only (not playing the land).
  * landseq15@NAME — landseq14 + crack-back check that never stops an attack Forge judges lethal (forgeThinksLethal),
  *  holds back only when that saves us, and the attackers with the least power first.
@@ -1092,6 +1093,19 @@ public class LandfallBrain {
     }
 
     /** Stack order for simultaneous triggers: the Harmonizer doublings go on first, so they resolve last. */
+    /** landseq16 (2026-10-23): whenever Mightform Harmonizer's doubling triggers together with our other landfall
+     *  triggers (Sazh's Chocobo's counter, Earthbender Ascension's counter, ...), the doublings resolve LAST, so they
+     *  double the counters too (never worse). Forge's order list puts its first item on the stack first, so that item
+     *  resolves last: Harmonizer triggers go first. */
+    static List<SpellAbility> order16(Player me, List<SpellAbility> in) {
+        List<SpellAbility> h = new ArrayList<>(), rest = new ArrayList<>();
+        for (SpellAbility sa : in) (sa.getHostCard() != null && named(sa.getHostCard(), HARMONIZER) ? h : rest).add(sa);
+        if (h.isEmpty() || rest.isEmpty()) return null;
+        ControlBrain.count("landseq16_doublings_last");
+        h.addAll(rest);
+        return h;
+    }
+
     static List<SpellAbility> order(Player me, List<SpellAbility> in) {
         if (!strokeOn(me)) return null;
         List<SpellAbility> h = new ArrayList<>(), rest = new ArrayList<>();
