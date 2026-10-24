@@ -517,7 +517,7 @@ public class LandfallBrain {
         boolean fetchGivesMana = named(f.getHostCard(), PASSAGE) && lands >= 3;
         boolean need = false;
         boolean v8 = false;
-        for (int v = 8; v <= 13; v++) v8 |= AiTweaks.on("landseq" + v, me);
+        for (int v = 8; v <= 15; v++) v8 |= AiTweaks.on("landseq" + v, me);
         for (Card c : me.getCardsIn(ZoneType.Hand)) {
             if (c.isLand()) continue;
             if (v8 && named(c, RESOLVE) && !resolveUseful(me)) continue;   // landseq8: a useless Resolve needs no mana
@@ -533,13 +533,13 @@ public class LandfallBrain {
 
     /** every landseq version that runs seq2 (2026-10-23: one helper instead of a growing chain of flags) */
     static boolean seqOn(Player p) {
-        for (int v = 2; v <= 13; v++) if (AiTweaks.on("landseq" + v, p)) return true;
+        for (int v = 2; v <= 15; v++) if (AiTweaks.on("landseq" + v, p)) return true;
         return false;
     }
 
     /** landseq3 and later (lethal mode, safe attacks, trigger aiming) */
     static boolean v3On(Player p) {
-        for (int v = 3; v <= 13; v++) if (AiTweaks.on("landseq" + v, p)) return true;
+        for (int v = 3; v <= 15; v++) if (AiTweaks.on("landseq" + v, p)) return true;
         return false;
     }
 
@@ -706,6 +706,37 @@ public class LandfallBrain {
         return new ArrayList<>(out.subList(0, Math.min(n, out.size())));
     }
 
+    /** Forge's own judgement that an all-out attack is lethal (AiAttackController.doAssault, its "attack with everything"
+     *  path; a pure calculation over the attackers, blockers and life). user, 2026-10-23: "never stop Forge if Forge thinks
+     *  the attack is lethal". On any failure: assume lethal (do not stop the attack). */
+    static boolean forgeThinksLethal(Player me) {
+        try {
+            forge.ai.AiAttackController c = new forge.ai.AiAttackController(me);
+            java.lang.reflect.Method m = forge.ai.AiAttackController.class.getDeclaredMethod("doAssault");
+            m.setAccessible(true);
+            return (Boolean) m.invoke(c);
+        } catch (Exception e) {
+            return true;
+        }
+    }
+
+    /** landseq15 attacks: never against Forge's lethal judgement (or our lethal mode); hold back only when holding back
+     *  saves us from a lethal crack-back, and then the attackers with the least power first (least damage given up);
+     *  when we die either way, attack as planned. */
+    static void crackAttack15(Player me, forge.game.combat.Combat combat) {
+        if (lethalOn(me) || forgeThinksLethal(me)) { ControlBrain.count("landseq15_lethal_attack_kept"); return; }
+        List<Card> att = new ArrayList<>();
+        for (Card c : combat.getAttackers()) if (c.getController() == me && !c.hasKeyword(forge.game.keyword.Keyword.VIGILANCE)) att.add(c);
+        if (att.isEmpty() || crackSurvives(me, att) || !crackSurvives(me, new ArrayList<>())) return;
+        att.sort((x, y) -> Integer.compare(x.getNetPower(), y.getNetPower()));
+        List<Card> still = new ArrayList<>(att);
+        for (Card c : att) {
+            combat.removeFromCombat(c); still.remove(c);
+            ControlBrain.count("landseq15_attacker_kept_home");
+            if (crackSurvives(me, still)) return;
+        }
+    }
+
     /** landseq12/13 attacks: if this attack lets the opponent kill us next turn and keeping attackers home would not,
      *  keep home the fewest (best blockers first: highest toughness); if we die either way: landseq12 attacks as
      *  planned, landseq13 keeps every attacker home (blockers deter). Our own lethal attack is never held back. */
@@ -731,8 +762,10 @@ public class LandfallBrain {
 
     static List<SpellAbility> seq2(Player me, List<SpellAbility> ai) {
         Game g = me.getGame();
+        boolean v15 = AiTweaks.on("landseq15", me);
+        boolean v14 = v15 || AiTweaks.on("landseq14", me);
         boolean v13 = AiTweaks.on("landseq13", me), v12 = AiTweaks.on("landseq12", me);
-        boolean v11 = v12 || v13 || AiTweaks.on("landseq11", me);
+        boolean v11 = v12 || v13 || v14 || AiTweaks.on("landseq11", me);
         boolean v10 = AiTweaks.on("landseq10", me);
         boolean v9 = v10 || v11 || AiTweaks.on("landseq9", me);
         boolean v8 = v9 || AiTweaks.on("landseq8", me);
@@ -762,8 +795,8 @@ public class LandfallBrain {
             ControlBrain.count("landseq10_basingse_vetoed");
             return null;
         }
-        if ((v12 || v13) && pick != null && !pick.isSpell() && pick.getHostCard() != null && named(pick.getHostCard(), "Ba Sing Se")
-                && !pick.isManaAbility()) {                                                // landseq12/13: don't tap our way into a lethal crack-back
+        if ((v12 || v13 || v15) && pick != null && !pick.isSpell() && pick.getHostCard() != null && named(pick.getHostCard(), "Ba Sing Se")
+                && !pick.isManaAbility() && !(v15 && pick.isLandAbility())) {              // landseq12/13/15: don't tap our way into a lethal crack-back
             List<Card> tapped = manaCreaturesFor(me, landManaShortfall(me, pick.getHostCard(), 3));
             if (crackSurvives(me, new ArrayList<>()) && !crackSurvives(me, tapped)) {
                 ControlBrain.count("landseq12_basingse_vetoed");
@@ -771,7 +804,7 @@ public class LandfallBrain {
             }
         }
         if (v5 && pick != null && !pick.isSpell() && pick.getHostCard() != null && named(pick.getHostCard(), "Ba Sing Se")
-                && !pick.isManaAbility()) {                                                 // landseq5: spells before Ba Sing Se
+                && !pick.isManaAbility() && !(v14 && pick.isLandAbility())) {               // landseq5: spells before Ba Sing Se (v14: its ability, not the land play)
             SpellAbility best = null;
             for (SpellAbility sa : castable(me, ZoneType.Hand, null)) {
                 Card h = sa.getHostCard();
@@ -833,6 +866,9 @@ public class LandfallBrain {
      * landseq8@NAME — landseq7 + Meltstrider's Resolve only when its fight kills (resolveUseful).
  * landseq9@NAME — landseq8 + block reassignment (fixBlocks).
  * landseq10@NAME — landseq9 + the Ouroboroid crack-back (ouroThreat: attacks and Ba Sing Se payments).
+ * landseq14@NAME — landseq11 with the Ba Sing Se check meaning its activated ability only (not playing the land).
+ * landseq15@NAME — landseq14 + crack-back check that never stops an attack Forge judges lethal (forgeThinksLethal),
+ *  holds back only when that saves us, and the attackers with the least power first.
  * landseq11@NAME — landseq9 + no useless Resolve from landseq5 + block-loop crash fix.
  * landseq12/13@NAME — landseq11 + the lethal crack-back check (crackSurvives): 12 acts only when holding back saves us; 13 also
  *  keeps everything home when we would die either way.
