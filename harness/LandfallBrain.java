@@ -516,7 +516,8 @@ public class LandfallBrain {
         for (Card c : me.getCardsIn(ZoneType.Battlefield)) if (c.isLand()) lands++;
         boolean fetchGivesMana = named(f.getHostCard(), PASSAGE) && lands >= 3;
         boolean need = false;
-        boolean v8 = AiTweaks.on("landseq8", me) || AiTweaks.on("landseq9", me) || AiTweaks.on("landseq10", me);
+        boolean v8 = false;
+        for (int v = 8; v <= 13; v++) v8 |= AiTweaks.on("landseq" + v, me);
         for (Card c : me.getCardsIn(ZoneType.Hand)) {
             if (c.isLand()) continue;
             if (v8 && named(c, RESOLVE) && !resolveUseful(me)) continue;   // landseq8: a useless Resolve needs no mana
@@ -532,13 +533,13 @@ public class LandfallBrain {
 
     /** every landseq version that runs seq2 (2026-10-23: one helper instead of a growing chain of flags) */
     static boolean seqOn(Player p) {
-        for (int v = 2; v <= 10; v++) if (AiTweaks.on(v == 1 ? "landseq" : "landseq" + v, p)) return true;
+        for (int v = 2; v <= 13; v++) if (AiTweaks.on("landseq" + v, p)) return true;
         return false;
     }
 
     /** landseq3 and later (lethal mode, safe attacks, trigger aiming) */
     static boolean v3On(Player p) {
-        for (int v = 3; v <= 10; v++) if (AiTweaks.on("landseq" + v, p)) return true;
+        for (int v = 3; v <= 13; v++) if (AiTweaks.on("landseq" + v, p)) return true;
         return false;
     }
 
@@ -602,7 +603,7 @@ public class LandfallBrain {
                 if (from.size() != 1) continue;
                 Card a1 = from.get(0);
                 if (a1.hasKeyword(forge.game.keyword.Keyword.MENACE) && combat.getBlockers(a1).size() <= 2) continue;
-                for (Card a2 : combat.getAttackers()) {
+                for (Card a2 : new ArrayList<>(combat.getAttackers())) {   // a copy: the loop changes the combat
                     if (a2 == a1 || combat.getDefenderPlayerByAttacker(a2) != me) continue;
                     if (a2.hasKeyword(forge.game.keyword.Keyword.MENACE) && combat.getBlockers(a2).isEmpty()) continue;
                     boolean can;
@@ -668,10 +669,72 @@ public class LandfallBrain {
         }
     }
 
+    /**
+     * landseq12/13 (2026-10-23, user: "focus on how to better manage and prevent our opponent from being given the
+     * opportunity to launch a lethal attack"): the opponent's next attack. Every opposing creature attacks (they untap),
+     * with the counters each Ouroboroid adds at the start of its combat (X = its power; the first one's counters grow the
+     * next). Our creatures still untapped then (not attacking now, not in AWAY) block the biggest attackers, our
+     * toughest blocker on the biggest; a blocked trampler deals what exceeds the blocker's toughness. We survive if the
+     * damage is below our life.
+     */
+    static boolean crackSurvives(Player me, List<Card> away) {
+        Player op = ProwessBrain.opponent(me);
+        if (op == null) return true;
+        long acc = 0;
+        for (Card o : op.getCreaturesInPlay()) if (named(o, OURO)) acc += o.getNetPower() + acc;
+        List<long[]> att = new ArrayList<>();   // [power, trample]
+        for (Card c : op.getCreaturesInPlay())
+            att.add(new long[]{Math.max(0, c.getNetPower()) + acc, c.hasKeyword(forge.game.keyword.Keyword.TRAMPLE) ? 1 : 0});
+        att.sort((x, y) -> Long.compare(y[0], x[0]));
+        List<Long> bl = new ArrayList<>();
+        for (Card c : me.getCreaturesInPlay()) if (c.isUntapped() && !away.contains(c)) bl.add((long) Math.max(1, c.getNetToughness() - c.getDamage()));
+        bl.sort((x, y) -> Long.compare(y, x));
+        long dmg = 0;
+        for (int i = 0; i < att.size(); i++) {
+            long p = att.get(i)[0];
+            if (i < bl.size()) dmg += att.get(i)[1] == 1 ? Math.max(0, p - bl.get(i)) : 0;
+            else dmg += p;
+        }
+        return dmg < me.getLife();
+    }
+
+    /** the creatures a cost of N mana would tap: our untapped creatures with a mana ability first (Elves, earthbent lands) */
+    static List<Card> manaCreaturesFor(Player me, int n) {
+        List<Card> out = new ArrayList<>(), rest = new ArrayList<>();
+        for (Card c : me.getCreaturesInPlay()) if (c.isUntapped()) (c.getManaAbilities().isEmpty() ? rest : out).add(c);
+        out.addAll(rest);
+        return new ArrayList<>(out.subList(0, Math.min(n, out.size())));
+    }
+
+    /** landseq12/13 attacks: if this attack lets the opponent kill us next turn and keeping attackers home would not,
+     *  keep home the fewest (best blockers first: highest toughness); if we die either way: landseq12 attacks as
+     *  planned, landseq13 keeps every attacker home (blockers deter). Our own lethal attack is never held back. */
+    static void crackAttack(Player me, forge.game.combat.Combat combat, boolean holdAll) {
+        if (lethalOn(me)) return;
+        List<Card> att = new ArrayList<>();
+        for (Card c : combat.getAttackers()) if (c.getController() == me && !c.hasKeyword(forge.game.keyword.Keyword.VIGILANCE)) att.add(c);
+        if (att.isEmpty() || crackSurvives(me, att)) return;
+        if (!crackSurvives(me, new ArrayList<>())) {
+            if (!holdAll) return;
+            for (Card c : att) combat.removeFromCombat(c);
+            ControlBrain.count("landseq13_all_kept_home");
+            return;
+        }
+        att.sort((x, y) -> Integer.compare(y.getNetToughness(), x.getNetToughness()));
+        List<Card> still = new ArrayList<>(att);
+        for (Card c : att) {
+            combat.removeFromCombat(c); still.remove(c);
+            ControlBrain.count("landseq12_attacker_kept_home");
+            if (crackSurvives(me, still)) return;
+        }
+    }
+
     static List<SpellAbility> seq2(Player me, List<SpellAbility> ai) {
         Game g = me.getGame();
+        boolean v13 = AiTweaks.on("landseq13", me), v12 = AiTweaks.on("landseq12", me);
+        boolean v11 = v12 || v13 || AiTweaks.on("landseq11", me);
         boolean v10 = AiTweaks.on("landseq10", me);
-        boolean v9 = v10 || AiTweaks.on("landseq9", me);
+        boolean v9 = v10 || v11 || AiTweaks.on("landseq9", me);
         boolean v8 = v9 || AiTweaks.on("landseq8", me);
         boolean v7 = v8 || AiTweaks.on("landseq7", me);
         boolean v6 = v7 || AiTweaks.on("landseq6", me);
@@ -699,6 +762,14 @@ public class LandfallBrain {
             ControlBrain.count("landseq10_basingse_vetoed");
             return null;
         }
+        if ((v12 || v13) && pick != null && !pick.isSpell() && pick.getHostCard() != null && named(pick.getHostCard(), "Ba Sing Se")
+                && !pick.isManaAbility()) {                                                // landseq12/13: don't tap our way into a lethal crack-back
+            List<Card> tapped = manaCreaturesFor(me, landManaShortfall(me, pick.getHostCard(), 3));
+            if (crackSurvives(me, new ArrayList<>()) && !crackSurvives(me, tapped)) {
+                ControlBrain.count("landseq12_basingse_vetoed");
+                return null;
+            }
+        }
         if (v5 && pick != null && !pick.isSpell() && pick.getHostCard() != null && named(pick.getHostCard(), "Ba Sing Se")
                 && !pick.isManaAbility()) {                                                 // landseq5: spells before Ba Sing Se
             SpellAbility best = null;
@@ -706,6 +777,7 @@ public class LandfallBrain {
                 Card h = sa.getHostCard();
                 if (h.isLand() || isWarp(sa)) continue;
                 if (!(h.isCreature() || h.isArtifact() || h.isEnchantment())) continue;   // permanents (Worldwagon, creatures)
+                if (v11 && named(h, RESOLVE) && !resolveUseful(me)) continue;           // landseq11: landseq5 cast useless Resolves
                 if (best == null || h.getCMC() > best.getHostCard().getCMC()) best = sa;
             }
             if (best != null) { ControlBrain.count("landseq5_spell_before_basingse"); return List.of(best); }
@@ -761,6 +833,9 @@ public class LandfallBrain {
      * landseq8@NAME — landseq7 + Meltstrider's Resolve only when its fight kills (resolveUseful).
  * landseq9@NAME — landseq8 + block reassignment (fixBlocks).
  * landseq10@NAME — landseq9 + the Ouroboroid crack-back (ouroThreat: attacks and Ba Sing Se payments).
+ * landseq11@NAME — landseq9 + no useless Resolve from landseq5 + block-loop crash fix.
+ * landseq12/13@NAME — landseq11 + the lethal crack-back check (crackSurvives): 12 acts only when holding back saves us; 13 also
+ *  keeps everything home when we would die either way.
  * landseq7@NAME — landseq6 with its two clear misfires fixed (seeds 517, 1148): the fetch rule runs after Ascension-first, and
  *  a Harmonizer counts as a payoff only if a creature that can attack this turn would get the doubling.
  * landseq6@NAME — landseq5 + a fetch instead of a basic when a payoff is on board (fetchOverBasic).

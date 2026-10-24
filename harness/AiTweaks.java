@@ -60,6 +60,7 @@ import java.util.List;
  * landfall — LandfallBrain's Escape Tunnel + Mightform Harmonizer kill for Mono-Green Landfall.
  * lftrace@NAME — LandfallBrain.trace: state snapshots at our main-phase decisions (for agent scoring), changes nothing.
  * lfaudit@NAME — LandfallBrain.audit: counts Landfall misplays (mis_*), changes nothing.
+ * landseq11/12/13@NAME — landseq9 + fixes / + crack-back check (act only if it saves us) / + keep all home when doomed.
  * landseq8/9/10@NAME — landseq7 + Resolve only when useful / + block reassignment / + Ouroboroid crack-back.
  * landseq7@NAME — landseq6 with the fetch rule after Ascension-first and no fetch for an attacker-less Harmonizer.
  * landseq6@NAME — landseq5 + a fetch instead of a basic when a payoff is on board.
@@ -339,13 +340,15 @@ public class AiTweaks {
             if (ProwessBrain.ON(getPlayer())) ProwessBrain.forceAttack(getPlayer(), combat);
             if (LandfallBrain.v3On(getPlayer())) LandfallBrain.attack3(getPlayer(), combat);
             if (on("landseq10", getPlayer())) LandfallBrain.ouroAttack(getPlayer(), combat);
+            if (on("landseq12", getPlayer()) || on("landseq13", getPlayer())) LandfallBrain.crackAttack(getPlayer(), combat, on("landseq13", getPlayer()));
             if (on("lftrace", getPlayer())) LandfallBrain.traceCombat(getPlayer(), "ATTACK", combat);
         }
 
         @Override
         public void declareBlockers(Player defender, forge.game.combat.Combat combat) {
             super.declareBlockers(defender, combat);
-            if (on("landseq9", getPlayer()) || on("landseq10", getPlayer())) LandfallBrain.fixBlocks(getPlayer(), combat);
+            if (on("landseq9", getPlayer()) || on("landseq10", getPlayer()) || on("landseq11", getPlayer()) || on("landseq12", getPlayer())
+                    || on("landseq13", getPlayer())) LandfallBrain.fixBlocks(getPlayer(), combat);
             if (on("lftrace", getPlayer())) LandfallBrain.traceCombat(getPlayer(), "BLOCK", combat);
         }
 
