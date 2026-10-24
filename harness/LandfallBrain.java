@@ -308,6 +308,35 @@ public class LandfallBrain {
         if (!g.getPhaseHandler().isPlayerTurn(me) || !g.getStack().isEmpty()) return;
         PhaseType ph = g.getPhaseHandler().getPhase();
         if (ph != PhaseType.MAIN1 && ph != PhaseType.MAIN2) return;
+        traceLine(me, ai, "");
+    }
+
+    /**
+     * spelltrace@NAME (2026-10-23, Izzet Spellementals: instant-speed decks decide on the opponent's turn and in response):
+     * a snapshot at EVERY decision Forge makes (any phase, any stack), at each of our main-phase passes with an empty
+     * stack, and whenever we pass with an opponent's spell or ability on the stack (choosing not to respond is a
+     * decision). The stack, top first, is part of the line. Reads state only, like lftrace.
+     */
+    static void trace2(Player me, List<SpellAbility> ai) {
+        Game g = me.getGame();
+        boolean ours = g.getPhaseHandler().isPlayerTurn(me), empty = g.getStack().isEmpty();
+        PhaseType ph = g.getPhaseHandler().getPhase();
+        boolean acted = ai != null && !ai.isEmpty();
+        boolean oppOnStack = false;
+        List<String> st = new ArrayList<>();
+        for (forge.game.spellability.SpellAbilityStackInstance si : g.getStack()) {
+            Card h = si.getSourceCard();
+            boolean mine = si.getActivatingPlayer() == me;
+            if (!mine && st.isEmpty()) oppOnStack = true;   // the top item is the opponent's
+            st.add((mine ? "US " : "OPP ") + (h == null ? "?" : h.getName()));
+        }
+        if (!acted && !(ours && empty && (ph == PhaseType.MAIN1 || ph == PhaseType.MAIN2)) && !oppOnStack) return;
+        traceLine(me, ai, " stack=[" + String.join("; ", st) + "]");
+    }
+
+    static void traceLine(Player me, List<SpellAbility> ai, String extra) {
+        Game g = me.getGame();
+        PhaseType ph = g.getPhaseHandler().getPhase();
         StringBuilder s = new StringBuilder();
         s.append("hand=[");
         List<String> h = new ArrayList<>();
@@ -337,7 +366,7 @@ public class LandfallBrain {
         if (op != null) s.append(" opp=[").append(board(op)).append("]");
         String snap = s.toString();
         String choice = ai == null || ai.isEmpty() ? "pass" : choiceText(ai.get(0));
-        String line = "@" + g.getGameLog().getAllEntries().size() + " T" + g.getPhaseHandler().getTurn() + " " + ph + ": " + snap + " -> " + choice;
+        String line = "@" + g.getGameLog().getAllEntries().size() + " T" + g.getPhaseHandler().getTurn() + " " + ph + ": " + snap + extra + " -> " + choice;
         if ((snap + choice).equals(lastSnap)) return;
         lastSnap = snap + choice;
         ControlBrain.trace.append(line).append("\n");

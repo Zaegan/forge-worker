@@ -58,6 +58,7 @@ import java.util.List;
  * exact optimal strategy for the 10-criteria hand score, goldfish/mull_opt.py).
  *
  * landfall — LandfallBrain's Escape Tunnel + Mightform Harmonizer kill for Mono-Green Landfall.
+ * spelltrace@NAME — LandfallBrain.trace2: snapshots at every decision, our main-phase passes and passes on opponent spells (any deck).
  * lftrace@NAME — LandfallBrain.trace: state snapshots at our main-phase decisions (for agent scoring), changes nothing.
  * lfaudit@NAME — LandfallBrain.audit: counts Landfall misplays (mis_*), changes nothing.
  * landseq17@NAME — landseq7 + landseq5 Resolve fix + doublings last (the z>=1.0 bundle).
@@ -278,6 +279,7 @@ public class AiTweaks {
             }
             ai = spendIfIdle(getPlayer(), ai);
             if (on("lftrace", getPlayer())) LandfallBrain.trace(getPlayer(), ai);
+            if (on("spelltrace", getPlayer())) LandfallBrain.trace2(getPlayer(), ai);
             return on("lfaudit", getPlayer()) ? LandfallBrain.audit(getPlayer(), ai) : ai;
         }
 
@@ -362,7 +364,7 @@ public class AiTweaks {
             if (on("landseq10", getPlayer())) LandfallBrain.ouroAttack(getPlayer(), combat);
             if (on("landseq12", getPlayer()) || on("landseq13", getPlayer())) LandfallBrain.crackAttack(getPlayer(), combat, on("landseq13", getPlayer()));
             if (on("landseq15", getPlayer())) LandfallBrain.crackAttack15(getPlayer(), combat);
-            if (on("lftrace", getPlayer())) LandfallBrain.traceCombat(getPlayer(), "ATTACK", combat);
+            if (on("lftrace", getPlayer()) || on("spelltrace", getPlayer())) LandfallBrain.traceCombat(getPlayer(), "ATTACK", combat);
         }
 
         @Override
@@ -371,7 +373,7 @@ public class AiTweaks {
             if (on("landseq9", getPlayer()) || on("landseq10", getPlayer()) || on("landseq11", getPlayer()) || on("landseq12", getPlayer())
                     || on("landseq13", getPlayer()) || on("landseq14", getPlayer()) || on("landseq15", getPlayer())
                     || on("landseq16", getPlayer())) LandfallBrain.fixBlocks(getPlayer(), combat);
-            if (on("lftrace", getPlayer())) LandfallBrain.traceCombat(getPlayer(), "BLOCK", combat);
+            if (on("lftrace", getPlayer()) || on("spelltrace", getPlayer())) LandfallBrain.traceCombat(getPlayer(), "BLOCK", combat);
         }
 
         @Override
