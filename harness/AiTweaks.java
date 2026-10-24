@@ -58,6 +58,8 @@ import java.util.List;
  * exact optimal strategy for the 10-criteria hand score, goldfish/mull_opt.py).
  *
  * landfall — LandfallBrain's Escape Tunnel + Mightform Harmonizer kill for Mono-Green Landfall.
+ * spellplan1/2/3@NAME — SpellBrain (Izzet Spellementals): Sunderflock before combat / Eddymurk Crab on the opponent's turn /
+ *  Opt at the opponent's end step.
  * spelltrace@NAME — LandfallBrain.trace2: snapshots at every decision, our main-phase passes and passes on opponent spells (any deck).
  * lftrace@NAME — LandfallBrain.trace: state snapshots at our main-phase decisions (for agent scoring), changes nothing.
  * lfaudit@NAME — LandfallBrain.audit: counts Landfall misplays (mis_*), changes nothing.
@@ -225,6 +227,10 @@ public class AiTweaks {
                 SpellAbility pw = ProwessBrain.choose(getPlayer());
                 if (pw != null) return List.of(pw);
             }
+            if (SpellBrain.any(getPlayer())) {
+                SpellAbility sb = SpellBrain.choose(getPlayer());
+                if (sb != null) return List.of(sb);
+            }
             if (on("prowesspre", getPlayer())) {
                 SpellAbility pp = prowessPrecombat(getPlayer());
                 if (pp != null) return List.of(pp);
@@ -265,6 +271,7 @@ public class AiTweaks {
             List<SpellAbility> ai = aiChoose();
             ai = has("leyline") ? LeylineBrain.post(getPlayer(), ai) : ai;
             ai = ProwessBrain.ON(getPlayer()) ? ProwessBrain.post(getPlayer(), ai) : ai;
+            ai = SpellBrain.any(getPlayer()) ? SpellBrain.post(getPlayer(), ai) : ai;
             ai = on("landseq", getPlayer()) ? LandfallBrain.seq(getPlayer(), ai) : ai;
             ai = LandfallBrain.seqOn(getPlayer()) ? LandfallBrain.seq2(getPlayer(), ai) : ai;
             if (on("edgargrow", getPlayer()) && ai != null && !ai.isEmpty() && holdForEdgar(getPlayer(), ai.get(0))) {
