@@ -516,8 +516,10 @@ public class LandfallBrain {
         for (Card c : me.getCardsIn(ZoneType.Battlefield)) if (c.isLand()) lands++;
         boolean fetchGivesMana = named(f.getHostCard(), PASSAGE) && lands >= 3;
         boolean need = false;
+        boolean v8 = AiTweaks.on("landseq8", me) || AiTweaks.on("landseq9", me) || AiTweaks.on("landseq10", me);
         for (Card c : me.getCardsIn(ZoneType.Hand)) {
             if (c.isLand()) continue;
+            if (v8 && named(c, RESOLVE) && !resolveUseful(me)) continue;   // landseq8: a useless Resolve needs no mana
             int cost = named(c, HARMONIZER) ? Math.min(3, c.getCMC()) : c.getCMC();
             if (cost == src + 1) need = true;
         }
@@ -526,9 +528,152 @@ public class LandfallBrain {
         return f;
     }
 
+    static final String RESOLVE = "Meltstrider's Resolve", OURO = "Ouroboroid";
+
+    /** every landseq version that runs seq2 (2026-10-23: one helper instead of a growing chain of flags) */
+    static boolean seqOn(Player p) {
+        for (int v = 2; v <= 10; v++) if (AiTweaks.on(v == 1 ? "landseq" : "landseq" + v, p)) return true;
+        return false;
+    }
+
+    /** landseq3 and later (lethal mode, safe attacks, trigger aiming) */
+    static boolean v3On(Player p) {
+        for (int v = 3; v <= 10; v++) if (AiTweaks.on("landseq" + v, p)) return true;
+        return false;
+    }
+
+    /** landseq8 (pilot/reports/blind-landfall-scores.md, G10/G15/G1): Meltstrider's Resolve is worth casting only if one
+     *  of our creatures would kill an opposing creature in the fight (power >= its remaining toughness, or deathtouch) */
+    static boolean resolveUseful(Player me) {
+        Player op = ProwessBrain.opponent(me);
+        if (op == null) return false;
+        for (Card x : me.getCreaturesInPlay()) {
+            if (x.getNetPower() <= 0) continue;
+            for (Card y : op.getCreaturesInPlay()) {
+                if (y.hasKeyword(forge.game.keyword.Keyword.HEXPROOF) || y.hasKeyword(forge.game.keyword.Keyword.SHROUD)) continue;
+                if (x.hasKeyword(forge.game.keyword.Keyword.DEATHTOUCH) || x.getNetPower() >= y.getNetToughness() - y.getDamage()) return true;
+            }
+        }
+        return false;
+    }
+
+    /** landseq9 (blind report G11): after Forge's blocks, move single blockers between attackers when that turns a lethal
+     *  hit into survival, or prevents more damage with no more of our creatures lost and no fewer attackers killed.
+     *  Damage model: the attacker kills blockers in the cheapest order (deathtouch: 1 each); a trampler deals what is
+     *  left after lethal damage to every blocker; an attacker dies if a blocker has deathtouch or their power sums to
+     *  its toughness. */
+    static long[] blockEval(Player me, forge.game.combat.Combat combat) {
+        long dmg = 0, lost = 0, kills = 0;
+        for (Card a : combat.getAttackers()) {
+            if (combat.getDefenderPlayerByAttacker(a) != me) continue;
+            List<Card> bl = new ArrayList<>(combat.getBlockers(a));
+            long p = Math.max(0, a.getNetPower());
+            if (bl.isEmpty()) { dmg += p; continue; }
+            boolean dt = a.hasKeyword(forge.game.keyword.Keyword.DEATHTOUCH);
+            bl.sort((x, y) -> Long.compare(dt ? 1 : x.getNetToughness() - x.getDamage(), dt ? 1 : y.getNetToughness() - y.getDamage()));
+            long rem = p; boolean all = true;
+            for (Card b : bl) {
+                long need = dt ? 1 : Math.max(0, b.getNetToughness() - b.getDamage());
+                if (b.hasKeyword(forge.game.keyword.Keyword.INDESTRUCTIBLE)) { all = false; break; }
+                if (rem >= need && need > 0) { rem -= need; lost++; } else { all = false; break; }
+            }
+            if (a.hasKeyword(forge.game.keyword.Keyword.TRAMPLE) && all) dmg += rem;
+            long bp = 0; boolean bdt = false;
+            for (Card b : bl) { bp += Math.max(0, b.getNetPower()); if (b.hasKeyword(forge.game.keyword.Keyword.DEATHTOUCH) && b.getNetPower() > 0) bdt = true; }
+            if (!a.hasKeyword(forge.game.keyword.Keyword.INDESTRUCTIBLE) && (bdt || bp >= a.getNetToughness() - a.getDamage())) kills++;
+        }
+        return new long[]{dmg, lost, kills};
+    }
+
+    static boolean better(Player me, long[] n, long[] o) {
+        boolean nAlive = me.getLife() - n[0] > 0, oAlive = me.getLife() - o[0] > 0;
+        if (nAlive != oAlive) return nAlive;
+        return n[0] < o[0] && n[1] <= o[1] && n[2] >= o[2];
+    }
+
+    static void fixBlocks(Player me, forge.game.combat.Combat combat) {
+        if (combat == null) return;
+        for (int round = 0; round < 8; round++) {
+            long[] cur = blockEval(me, combat);
+            boolean moved = false;
+            for (Card b : new ArrayList<>(combat.getAllBlockers())) {
+                if (b.getController() != me) continue;
+                List<Card> from = new ArrayList<>(combat.getAttackersBlockedBy(b));
+                if (from.size() != 1) continue;
+                Card a1 = from.get(0);
+                if (a1.hasKeyword(forge.game.keyword.Keyword.MENACE) && combat.getBlockers(a1).size() <= 2) continue;
+                for (Card a2 : combat.getAttackers()) {
+                    if (a2 == a1 || combat.getDefenderPlayerByAttacker(a2) != me) continue;
+                    if (a2.hasKeyword(forge.game.keyword.Keyword.MENACE) && combat.getBlockers(a2).isEmpty()) continue;
+                    boolean can;
+                    try { can = CombatUtil.canBlock(a2, b); } catch (Exception e) { can = false; }
+                    if (!can) continue;
+                    combat.removeBlockAssignment(a1, b);
+                    combat.addBlocker(a2, b);
+                    long[] n = blockEval(me, combat);
+                    if (better(me, n, cur)) { ControlBrain.count("landseq9_block_moved"); moved = true; break; }
+                    combat.removeBlockAssignment(a2, b);
+                    combat.addBlocker(a1, b);
+                }
+                if (moved) break;
+            }
+            if (!moved) return;
+        }
+    }
+
+    /** landseq10 (blind report G4): the opponent's next combat with Ouroboroid. At the beginning of its combat each
+     *  Ouroboroid puts X +1/+1 counters on each of its creatures, X = its power (the first one's counters grow the
+     *  next). Every opposing creature then attacks; each of our creatures still untapped then blocks one attacker
+     *  (the biggest first). Threat = the rest reaches our life. EXTRA: our creatures that will be tapped as well. */
+    static boolean ouroThreat(Player me, int extraTapped) {
+        Player op = ProwessBrain.opponent(me);
+        if (op == null) return false;
+        List<Card> ouros = new ArrayList<>();
+        for (Card c : op.getCreaturesInPlay()) if (named(c, OURO)) ouros.add(c);
+        if (ouros.isEmpty()) return false;
+        long acc = 0;
+        for (Card o : ouros) acc += o.getNetPower() + acc;
+        List<Long> pw = new ArrayList<>();
+        for (Card c : op.getCreaturesInPlay()) pw.add(Math.max(0, c.getNetPower()) + acc);
+        pw.sort((x, y) -> Long.compare(y, x));
+        int blockers = 0;
+        for (Card c : me.getCreaturesInPlay()) if (c.isUntapped()) blockers++;
+        blockers = Math.max(0, blockers - extraTapped);
+        long dmg = 0;
+        for (int i = blockers; i < pw.size(); i++) dmg += pw.get(i);
+        return dmg >= me.getLife();
+    }
+
+    /** creatures that paying COST for HOST's ability would have to tap: COST minus our untapped non-creature mana lands */
+    static int landManaShortfall(Player me, Card host, int cost) {
+        int lands = 0;
+        for (Card c : me.getCardsIn(ZoneType.Battlefield))
+            if (c != host && c.isLand() && !c.isCreature() && c.isUntapped() && !c.getManaAbilities().isEmpty()) lands++;
+        return Math.max(0, cost - lands);
+    }
+
+    /** landseq10 attacks: unless our attack is lethal, keep home (smallest first) the attackers whose absence as
+     *  blockers would let the Ouroboroid crack-back kill us */
+    static void ouroAttack(Player me, forge.game.combat.Combat combat) {
+        if (lethalOn(me)) return;
+        for (int guard = 0; guard < 20; guard++) {
+            List<Card> att = new ArrayList<>();
+            for (Card c : combat.getAttackers()) if (c.getController() == me && !c.hasKeyword(forge.game.keyword.Keyword.VIGILANCE)) att.add(c);
+            if (att.isEmpty()) return;
+            // attacking creatures are tapped next turn: count them out of the blockers
+            if (!ouroThreat(me, att.size())) return;
+            att.sort((x, y) -> Integer.compare(x.getNetPower(), y.getNetPower()));
+            combat.removeFromCombat(att.get(0));
+            ControlBrain.count("landseq10_attacker_kept_home");
+        }
+    }
+
     static List<SpellAbility> seq2(Player me, List<SpellAbility> ai) {
         Game g = me.getGame();
-        boolean v7 = AiTweaks.on("landseq7", me);
+        boolean v10 = AiTweaks.on("landseq10", me);
+        boolean v9 = v10 || AiTweaks.on("landseq9", me);
+        boolean v8 = v9 || AiTweaks.on("landseq8", me);
+        boolean v7 = v8 || AiTweaks.on("landseq7", me);
         boolean v6 = v7 || AiTweaks.on("landseq6", me);
         boolean v5 = v6 || AiTweaks.on("landseq5", me);
         boolean v4 = v5 || AiTweaks.on("landseq4", me);
@@ -538,6 +683,22 @@ public class LandfallBrain {
         PhaseType ph = g.getPhaseHandler().getPhase();
         if (ph != PhaseType.MAIN1 && ph != PhaseType.MAIN2) return ai;
         SpellAbility pick = ai == null || ai.isEmpty() ? null : ai.get(0);
+        if (v8 && pick != null && pick.isSpell() && pick.getHostCard() != null && named(pick.getHostCard(), RESOLVE)
+                && !resolveUseful(me)) {                                                   // landseq8: no useless Resolve
+            SpellAbility o = null;
+            for (SpellAbility sa : castable(me, ZoneType.Hand, null)) {
+                Card h = sa.getHostCard();
+                if (h.isLand() || named(h, RESOLVE) || isWarp(sa)) continue;
+                if (o == null || h.getCMC() > o.getHostCard().getCMC()) o = sa;
+            }
+            ControlBrain.count(o == null ? "landseq8_resolve_vetoed" : "landseq8_resolve_replaced");
+            return o == null ? null : List.of(o);
+        }
+        if (v10 && pick != null && !pick.isSpell() && pick.getHostCard() != null && named(pick.getHostCard(), "Ba Sing Se")
+                && !pick.isManaAbility() && ouroThreat(me, landManaShortfall(me, pick.getHostCard(), 3))) {   // landseq10
+            ControlBrain.count("landseq10_basingse_vetoed");
+            return null;
+        }
         if (v5 && pick != null && !pick.isSpell() && pick.getHostCard() != null && named(pick.getHostCard(), "Ba Sing Se")
                 && !pick.isManaAbility()) {                                                 // landseq5: spells before Ba Sing Se
             SpellAbility best = null;
@@ -597,7 +758,10 @@ public class LandfallBrain {
     }
 
     /**
-     * landseq7@NAME — landseq6 with its two clear misfires fixed (seeds 517, 1148): the fetch rule runs after Ascension-first, and
+     * landseq8@NAME — landseq7 + Meltstrider's Resolve only when its fight kills (resolveUseful).
+ * landseq9@NAME — landseq8 + block reassignment (fixBlocks).
+ * landseq10@NAME — landseq9 + the Ouroboroid crack-back (ouroThreat: attacks and Ba Sing Se payments).
+ * landseq7@NAME — landseq6 with its two clear misfires fixed (seeds 517, 1148): the fetch rule runs after Ascension-first, and
  *  a Harmonizer counts as a payoff only if a creature that can attack this turn would get the doubling.
  * landseq6@NAME — landseq5 + a fetch instead of a basic when a payoff is on board (fetchOverBasic).
  *
