@@ -24,6 +24,15 @@ import java.util.List;
  *   main 1 (it waits for the opponent's end step), and whenever it would leave no untapped blue source while a
  *   counterspell (Spell Snare, Spell Pierce, Get Out) is in hand on the opponent's turn. At the opponent's end step a
  *   castable Opt is cast.
+ * spellplan4 — Crab for lethal (2026-10-25, pilot/reports/sp12-10-report.md: 105 T14 missed lethal, 102 T13 main-phase
+ *   Crab with no attack): in our main 1 with an empty stack, cast a castable Crab if tapping the opponent's two best
+ *   untapped creatures leaves a lethal attack (worst-case blocks by the rest, no trample counted); then, if the attack
+ *   is really lethal at declare-attackers (whatever the Crab tapped), attack with everything. With spellplan2 on, its
+ *   main-phase exception "helps an attack" becomes this lethal check (the Sunderflock exception stays).
+ * spellplan5 — removal at the opponent's end step (same report: 100 T10, 103 T11, 107 T15): Forge's Traumatic Critique,
+ *   Sear or Burst Lightning in our own upkeep or draw step with an empty stack is vetoed when it would leave fewer
+ *   untapped sources than a Crab or Sunderflock in hand costs; at the opponent's end step, one of them is cast if
+ *   Forge's AI would play it there (its own target and X).
  */
 public class SpellBrain {
     static final String SUNDER = "Sunderflock", CRAB = "Eddymurk Crab", OPT = "Opt";
@@ -31,7 +40,66 @@ public class SpellBrain {
     static boolean on1(Player p) { return AiTweaks.on("spellplan1", p); }
     static boolean on2(Player p) { return AiTweaks.on("spellplan2", p); }
     static boolean on3(Player p) { return AiTweaks.on("spellplan3", p); }
-    static boolean any(Player p) { return on1(p) || on2(p) || on3(p); }
+    static boolean on4(Player p) { return AiTweaks.on("spellplan4", p); }
+    static boolean on5(Player p) { return AiTweaks.on("spellplan5", p); }
+    static boolean any(Player p) { return on1(p) || on2(p) || on3(p) || on4(p) || on5(p); }
+    static final java.util.Set<String> REMOVAL = java.util.Set.of("Traumatic Critique", "Sear", "Burst Lightning");
+
+    /** worst-case unblocked damage of an all-out attack: each untapped opponent creature not in TAPPED blocks one of
+     *  our attackers it can block, biggest attackers first (greedy); trample is not counted */
+    static long unblocked(Player me, Player op, java.util.Collection<Card> tapped) {
+        List<Card> att = new ArrayList<>();
+        for (Card c : me.getCreaturesInPlay()) if (LandfallBrain.canAttackThisTurn(c) && c.getNetPower() > 0) att.add(c);
+        att.sort((x, y) -> Integer.compare(y.getNetPower(), x.getNetPower()));
+        List<Card> bl = new ArrayList<>();
+        for (Card b : op.getCreaturesInPlay()) if (b.isUntapped() && !tapped.contains(b)) bl.add(b);
+        long d = 0;
+        for (Card a : att) {
+            Card used = null;
+            for (Card b : bl) {
+                boolean can;
+                try { can = forge.game.combat.CombatUtil.canBlock(a, b); } catch (Exception e) { can = true; }
+                if (can) { used = b; break; }
+            }
+            if (used != null) bl.remove(used); else d += a.getNetPower();
+        }
+        return d;
+    }
+
+    /** the opponent's two best untapped creatures (the Crab's likely targets) */
+    static List<Card> twoBest(Player op) {
+        List<Card> u = new ArrayList<>();
+        for (Card b : op.getCreaturesInPlay()) if (b.isUntapped()) u.add(b);
+        u.sort((x, y) -> Integer.compare(forge.ai.ComputerUtilCard.evaluateCreature(y), forge.ai.ComputerUtilCard.evaluateCreature(x)));
+        return u.subList(0, Math.min(2, u.size()));
+    }
+
+    static boolean crabLethal(Player me, Player op) {
+        return unblocked(me, op, twoBest(op)) >= op.getLife();
+    }
+
+    static Game lethalGame; static int lethalTurn = -1;
+
+    /** spellplan4 at declare-attackers: after a lethal Crab this turn, attack with everything if it is lethal now */
+    static void forceAttack(Player me, forge.game.combat.Combat combat) {
+        Game g = me.getGame();
+        if (!on4(me) || lethalGame != g || lethalTurn != g.getPhaseHandler().getTurn()) return;
+        Player op = ProwessBrain.opponent(me);
+        if (op == null || unblocked(me, op, java.util.List.of()) < op.getLife()) { ControlBrain.count("spellplan4_not_lethal_after_crab"); return; }
+        for (Card c : me.getCreaturesInPlay())
+            if (!combat.isAttacking(c) && forge.game.combat.CombatUtil.canAttack(c, op)) {
+                combat.addAttacker(c, op);
+                ControlBrain.count("spellplan4_forced_attacker");
+            }
+    }
+
+    static int cheapestElemental(Player me) {
+        int best = Integer.MAX_VALUE;
+        for (String n : new String[] {CRAB, SUNDER})
+            for (SpellAbility sa : LandfallBrain.castable(me, ZoneType.Hand, n))
+                best = Math.min(best, sa.getPayCosts().getTotalMana().getCMC());
+        return best;
+    }
 
     static boolean elemental(Card c) { return c.getType().hasCreatureType("Elemental"); }
 
@@ -80,6 +148,25 @@ public class SpellBrain {
                 if (crab != null) { ControlBrain.count(ph == PhaseType.END_OF_TURN ? "spellplan2_crab_eot" : "spellplan2_crab_combat"); return crab; }
             }
         }
+        if (on4(me) && ours && ph == PhaseType.MAIN1) {
+            SpellAbility crab = first(me, CRAB);
+            if (crab != null && crabLethal(me, op)) {
+                lethalGame = g; lethalTurn = g.getPhaseHandler().getTurn();
+                ControlBrain.count("spellplan4_crab_lethal");
+                return crab;
+            }
+        }
+        if (on5(me) && !ours && ph == PhaseType.END_OF_TURN) {
+            for (Card c : me.getCardsIn(ZoneType.Hand)) {
+                if (!REMOVAL.contains(c.getName())) continue;
+                for (SpellAbility sa : LandfallBrain.castable(me, ZoneType.Hand, c.getName())) {
+                    try {
+                        forge.ai.AiController ai = ((forge.ai.PlayerControllerAi) me.getController()).getAi();
+                        if (ai.canPlaySa(sa) == forge.ai.AiPlayDecision.WillPlay) { ControlBrain.count("spellplan5_removal_eot"); return sa; }
+                    } catch (Exception e) { continue; }
+                }
+            }
+        }
         if (on3(me) && !ours && ph == PhaseType.END_OF_TURN) {
             SpellAbility o = first(me, OPT);
             if (o != null) { ControlBrain.count("spellplan3_opt_eot"); return o; }
@@ -114,11 +201,19 @@ public class SpellBrain {
         if (on2(me) && ours && LandfallBrain.named(h, CRAB) && op != null) {
             boolean oppUntapped = false;
             for (Card c : op.getCreaturesInPlay()) if (c.isUntapped()) oppUntapped = true;
-            boolean helpsAttack = ph == PhaseType.MAIN1 && ourAttacker(me) && oppUntapped;
+            boolean helpsAttack = on4(me) ? ph == PhaseType.MAIN1 && crabLethal(me, op)
+                    : ph == PhaseType.MAIN1 && ourAttacker(me) && oppUntapped;
             boolean enablesSunder = false;
             for (Card c : me.getCardsIn(ZoneType.Hand)) if (LandfallBrain.named(c, SUNDER)) enablesSunder = true;
             enablesSunder = enablesSunder && LandfallBrain.untappedSources(me) >= pick.getPayCosts().getTotalMana().getCMC() + 2;
             if (!helpsAttack && !enablesSunder) { ControlBrain.count("spellplan2_crab_held"); return null; }
+        }
+        if (on5(me) && ours && REMOVAL.contains(h.getName()) && g.getStack().isEmpty()
+                && (ph == PhaseType.UPKEEP || ph == PhaseType.DRAW)) {
+            int need = cheapestElemental(me);
+            if (need != Integer.MAX_VALUE && LandfallBrain.untappedSources(me) - pick.getPayCosts().getTotalMana().getCMC() < need) {
+                ControlBrain.count("spellplan5_removal_held"); return null;
+            }
         }
         if (on3(me) && LandfallBrain.named(h, OPT)) {
             boolean badStep = ph == PhaseType.UPKEEP || ph == PhaseType.DRAW || (!ours && ph == PhaseType.MAIN1);

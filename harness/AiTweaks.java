@@ -58,8 +58,8 @@ import java.util.List;
  * exact optimal strategy for the 10-criteria hand score, goldfish/mull_opt.py).
  *
  * landfall — LandfallBrain's Escape Tunnel + Mightform Harmonizer kill for Mono-Green Landfall.
- * spellplan1/2/3@NAME — SpellBrain (Izzet Spellementals): Sunderflock before combat / Eddymurk Crab on the opponent's turn /
- *  Opt at the opponent's end step.
+ * spellplan1/2/3/4/5@NAME — SpellBrain (Izzet Spellementals): Sunderflock before combat / Eddymurk Crab on the opponent's turn /
+ *  Opt at the opponent's end step / Crab for lethal, then attack with everything / removal at the opponent's end step.
  * spelltrace@NAME — LandfallBrain.trace2: snapshots at every decision, our main-phase passes and passes on opponent spells (any deck).
  * lftrace@NAME — LandfallBrain.trace: state snapshots at our main-phase decisions (for agent scoring), changes nothing.
  * lfaudit@NAME — LandfallBrain.audit: counts Landfall misplays (mis_*), changes nothing.
@@ -367,6 +367,7 @@ public class AiTweaks {
             if (has("protect")) ProtectBrain.holdTamBack(getPlayer(), combat);
             if (has("leyline")) LeylineBrain.forceAttack(getPlayer(), combat);
             if (ProwessBrain.ON(getPlayer())) ProwessBrain.forceAttack(getPlayer(), combat);
+            if (SpellBrain.on4(getPlayer())) SpellBrain.forceAttack(getPlayer(), combat);
             if (LandfallBrain.v3On(getPlayer())) LandfallBrain.attack3(getPlayer(), combat);
             if (on("landseq10", getPlayer())) LandfallBrain.ouroAttack(getPlayer(), combat);
             if (on("landseq12", getPlayer()) || on("landseq13", getPlayer())) LandfallBrain.crackAttack(getPlayer(), combat, on("landseq13", getPlayer()));
