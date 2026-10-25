@@ -50,6 +50,7 @@ import java.util.List;
  *   creature that can't attack yet, others on our best attacker; after combat, on any creature).
  * prowessplan — Izzet Prowess (ProwessBrain): each turn "can we win this turn?" (lethal search over cheap spells, burn
  *   targets and Eddymurk Crab, worst-case blocks); if so, cast the line and attack with everything; if not, set-up mode.
+ * azoriushold / dimirbetrayal / dimirlethal @NAME — stock meta decks' hypotheses A1, D1, D2 (MetaBrain).
  * prowessstoke / prowesscantrip / prowesshaste / prowessdefend @NAME — Prowess hypotheses P1, P2, P4, P5, one switch each
  *   (add-ons to prowessplan; ProwessBrain). prowessplan2 is P3.
  * prowessplan3@NAME — prowessplan + held cantrips must draw/dig (not Secret Identity) + no Stoke Genius discarding 3+ cards.
@@ -305,6 +306,7 @@ public class AiTweaks {
             ai = post("leyline", ai, has("leyline") ? LeylineBrain.post(getPlayer(), ai) : ai);
             ai = post("prowessplan", ai, ProwessBrain.ON(getPlayer()) ? ProwessBrain.post(getPlayer(), ai) : ai);
             ai = post("spellplan", ai, SpellBrain.any(getPlayer()) ? SpellBrain.post(getPlayer(), ai) : ai);
+            ai = post("metaplan", ai, MetaBrain.any(getPlayer()) ? MetaBrain.post(getPlayer(), ai) : ai);
             ai = post("landseq", ai, on("landseq", getPlayer()) ? LandfallBrain.seq(getPlayer(), ai) : ai);
             ai = post("landseq", ai, LandfallBrain.seqOn(getPlayer()) ? LandfallBrain.seq2(getPlayer(), ai) : ai);
             if (on("edgargrow", getPlayer()) && ai != null && !ai.isEmpty() && holdForEdgar(getPlayer(), ai.get(0))) {
@@ -412,6 +414,7 @@ public class AiTweaks {
             if (has("leyline")) LeylineBrain.forceAttack(getPlayer(), combat);
             if (ProwessBrain.ON(getPlayer())) ProwessBrain.forceAttack(getPlayer(), combat);
             if (SpellBrain.on4(getPlayer())) SpellBrain.forceAttack(getPlayer(), combat);
+            if (MetaBrain.d2(getPlayer())) MetaBrain.forceAttack(getPlayer(), combat);
             if (LandfallBrain.v3On(getPlayer())) LandfallBrain.attack3(getPlayer(), combat);
             if (on("landseq10", getPlayer())) LandfallBrain.ouroAttack(getPlayer(), combat);
             if (on("landseq12", getPlayer()) || on("landseq13", getPlayer())) LandfallBrain.crackAttack(getPlayer(), combat, on("landseq13", getPlayer()));
