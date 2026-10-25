@@ -377,7 +377,7 @@ public class LandfallBrain {
         }
         s.append(" battlefield=[").append(String.join("; ", b)).append("]");
         List<String> gy = new ArrayList<>(), ex = new ArrayList<>();
-        for (Card c : me.getCardsIn(ZoneType.Graveyard)) if (c.isLand() || c.isInstant() || c.isSorcery()) gy.add(c.getName());
+        for (Card c : me.getCardsIn(ZoneType.Graveyard)) gy.add(c.getName());   // every card (2026-10-25: creatures were missing)
         for (Card c : me.getCardsIn(ZoneType.Exile)) ex.add(c.getName());
         java.util.Collections.sort(gy); java.util.Collections.sort(ex);
         s.append(" gy=[").append(String.join("; ", gy)).append("] exile=[").append(String.join("; ", ex)).append("]");
@@ -450,7 +450,16 @@ public class LandfallBrain {
         if (sa.isLandAbility()) return "play land " + n;
         String d = sa.getDescription() == null ? "" : sa.getDescription().replace("\n", " ");
         if (d.length() > 70) d = d.substring(0, 70);
-        return (sa.isSpell() ? "cast " : "activate ") + n + (sa.isSpell() ? (isWarp(sa) ? " (warp)" : "") : " (" + d + ")");
+        String modes = "";   // the chosen modes of a charm or spree spell (2026-10-25: scorers could not see them)
+        if (sa.getChosenList() != null && !sa.getChosenList().isEmpty()) {
+            List<String> ms = new ArrayList<>();
+            for (SpellAbility m : sa.getChosenList()) {
+                String md = m.getDescription() == null ? "?" : m.getDescription().replace("\n", " ");
+                ms.add(md.length() > 45 ? md.substring(0, 45) : md);
+            }
+            modes = " [modes: " + String.join(" + ", ms) + "]";
+        }
+        return (sa.isSpell() ? "cast " : "activate ") + n + (sa.isSpell() ? (isWarp(sa) ? " (warp)" : "") + modes : " (" + d + ")");
     }
 
     /**

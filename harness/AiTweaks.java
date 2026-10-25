@@ -434,6 +434,20 @@ public class AiTweaks {
         @Override
         public boolean payCostToPreventEffect(forge.game.cost.Cost cost, SpellAbility sa, boolean alreadyPaid,
                                               forge.util.collect.FCollectionView<Player> allPayers) {
+            boolean r = payCost0(cost, sa, alreadyPaid, allPayers);
+            if (on("spelltrace", getPlayer())) {   // "unless" and optional costs: ward, Cheering Crowd's counter (2026-10-25)
+                Game g = getPlayer().getGame();
+                forge.game.card.Card h = sa.getHostCard();
+                ControlBrain.trace.append("@").append(g.getGameLog().getAllEntries().size()).append(" ").append(LandfallBrain.deckTag(getPlayer()))
+                        .append(" T").append(g.getPhaseHandler().getTurn()).append(" UNLESS: ").append(h == null ? "?" : h.getName())
+                        .append(": ").append(cost.toSimpleString()).append(sa.hasParam("UnlessSwitched") ? " (optional)" : "")
+                        .append(" -> ").append(r ? "pay" : "decline").append("\n");
+            }
+            return r;
+        }
+
+        boolean payCost0(forge.game.cost.Cost cost, SpellAbility sa, boolean alreadyPaid,
+                         forge.util.collect.FCollectionView<Player> allPayers) {
             if (on("crowdno", getPlayer()) && feedsOpponent(cost, sa, getPlayer())) {
                 ControlBrain.count("crowdno");
                 return false;
