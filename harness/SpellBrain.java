@@ -37,6 +37,12 @@ import java.util.List;
  *   is on top of the stack and Spell Snare is castable, Snare it. During the opponent's upkeep, draw step or main 1,
  *   Forge's Opt, Sleight of Hand or Prismari Charm (surveil mode) is vetoed when it would leave fewer untapped blue sources than a
  *   counter in hand needs (Snare/Pierce 1, Get Out 2).
+ * spellplan6t / spellplan6v (2026-10-25, the spellplan6 confirmation split: vs 4c z -1.75, its extra Snares hit mostly
+ *   Consult the Star Charts): the two halves of spellplan6, each alone. 6t = the Snare half with a TARGET test: Snare (ours,
+ *   and Forge's own) only on a spell that is not mere card selection -- a spell whose first effect is draw, dig, scry or
+ *   surveil (Consult the Star Charts, also by flashback; Esper Origins from hand) is let through; a creature or planeswalker
+ *   spell, or a transforming card cast from a graveyard (Esper Origins becomes a creature), is always fair game. 6v = the cantrip veto half alone.
+ *   Pooled = both switches on.
  * spellplan7 — Prismari Charm damage over bounce (same report: 101 T9): when Forge chose the bounce mode on an opponent's
  *   creature that 1 damage kills, the damage mode is chosen instead: that creature, plus the opponent's best other
  *   creature 1 damage kills, else the opponent.
@@ -51,7 +57,21 @@ public class SpellBrain {
     static boolean on5(Player p) { return AiTweaks.on("spellplan5", p); }
     static boolean on6(Player p) { return AiTweaks.on("spellplan6", p); }
     static boolean on7(Player p) { return AiTweaks.on("spellplan7", p); }
-    static boolean any(Player p) { return on1(p) || on2(p) || on3(p) || on4(p) || on5(p) || on6(p) || on7(p); }
+    static boolean on6t(Player p) { return AiTweaks.on("spellplan6t", p); }
+    static boolean on6v(Player p) { return AiTweaks.on("spellplan6v", p); }
+
+    /** spellplan6t: a spell not worth a Snare -- card selection only, cast from hand, not a creature or planeswalker */
+    static boolean lowValue(SpellAbility t) {
+        Card h = t.getHostCard();
+        if (h == null || h.isCreature() || h.isPlaneswalker()) return false;
+        try {
+            if (h.isTransformable() && h.getCastFrom() != null && h.getCastFrom().getZoneType() == ZoneType.Graveyard) return false;
+        } catch (RuntimeException e) { return false; }
+        forge.game.ability.ApiType a = t.getApi();
+        return a == forge.game.ability.ApiType.Draw || a == forge.game.ability.ApiType.Dig
+                || a == forge.game.ability.ApiType.Scry || a == forge.game.ability.ApiType.Surveil;
+    }
+    static boolean any(Player p) { return on1(p) || on2(p) || on3(p) || on4(p) || on5(p) || on6(p) || on7(p) || on6t(p) || on6v(p); }
     static final String SNARE = "Spell Snare", CHARM = "Prismari Charm";
     static final java.util.Set<String> CANTRIPS = java.util.Set.of("Opt", "Sleight of Hand");
     static final java.util.Set<String> REMOVAL = java.util.Set.of("Traumatic Critique", "Sear", "Burst Lightning");
@@ -134,7 +154,7 @@ public class SpellBrain {
     static SpellAbility choose(Player me) {
         if (!any(me)) return null;
         Game g = me.getGame();
-        if (on6(me) && !g.getStack().isEmpty()) return snare(me);
+        if ((on6(me) || on6t(me)) && !g.getStack().isEmpty()) return snare(me);
         if (!g.getStack().isEmpty()) return null;
         Player op = ProwessBrain.opponent(me);
         if (op == null) return null;
@@ -191,6 +211,7 @@ public class SpellBrain {
         SpellAbility top = me.getGame().getStack().peekAbility();
         if (top == null || !top.isSpell() || top.getActivatingPlayer() == me || top.getHostCard() == null
                 || top.getHostCard().getCMC() != 2) return null;
+        if (on6t(me) && !on6(me) && lowValue(top)) { ControlBrain.count("spellplan6t_let_through"); return null; }
         for (SpellAbility sa : LandfallBrain.castable(me, ZoneType.Hand, SNARE)) {
             sa.resetTargets();
             if (!sa.canTarget(top)) continue;
@@ -298,7 +319,11 @@ public class SpellBrain {
                 ControlBrain.count("spellplan5_removal_held"); return null;
             }
         }
-        if (on6(me) && !ours && (CANTRIPS.contains(h.getName()) || h.getName().equals(CHARM) && charmDraws(pick))
+        if (on6t(me) && !on6(me) && h.getName().equals(SNARE) && pick.getTargets() != null) {   // Forge's own Snare too
+            for (SpellAbility t : pick.getTargets().getTargetSpells())
+                if (lowValue(t)) { ControlBrain.count("spellplan6t_forge_snare_vetoed"); return null; }
+        }
+        if ((on6(me) || on6v(me)) && !ours && (CANTRIPS.contains(h.getName()) || h.getName().equals(CHARM) && charmDraws(pick))
                 && (ph == PhaseType.UPKEEP || ph == PhaseType.DRAW || ph == PhaseType.MAIN1)) {
             int need = counterNeed(me);
             if (need > 0 && blueSources(me) - 1 < need) { ControlBrain.count("spellplan6_cantrip_keeps_counter_mana"); return null; }
