@@ -50,6 +50,8 @@ import java.util.List;
  *   creature that can't attack yet, others on our best attacker; after combat, on any creature).
  * prowessplan — Izzet Prowess (ProwessBrain): each turn "can we win this turn?" (lethal search over cheap spells, burn
  *   targets and Eddymurk Crab, worst-case blocks); if so, cast the line and attack with everything; if not, set-up mode.
+ * prowessstoke / prowesscantrip / prowesshaste / prowessdefend @NAME — Prowess hypotheses P1, P2, P4, P5, one switch each
+ *   (add-ons to prowessplan; ProwessBrain). prowessplan2 is P3.
  * prowessplan3@NAME — prowessplan + held cantrips must draw/dig (not Secret Identity) + no Stoke Genius discarding 3+ cards.
  * leyburn / leyotter / leydig / leyland — with leyline, fixes from reading losses (LeylineBrain): no Burn Together on
  * our own creature before combat, and "attack, then Burn Together to the face" counted as lethal; Elusive Otter pumped

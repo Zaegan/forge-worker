@@ -46,6 +46,19 @@ public class ProwessBrain {
      *  end step with nothing to target: 2 of 10 games), and (b) no "discard your hand" spell (Stoke Genius, Hearth
      *  Elemental's adventure) that throws away 3+ other cards for its 2 (Forge's AI did it in 4 of 10 games per seat). */
     static boolean V3(Player me) { return AiTweaks.on("prowessplan3", me); }
+    /* One switch per hypothesis (pilot/TUNE_TARGETS.md, 2026-10-25: tested one at a time). Each is an add-on to prowessplan
+     * (or prowessplan2/3) and acts only with one of them on:
+     *   prowessstoke@NAME   P1  no "discard your hand" spell (Stoke Genius) discarding 3+ other cards
+     *   prowesscantrip@NAME P2  a held "instant cantrip" must draw/dig (not Secret Identity)
+     *   prowesshaste@NAME   P4  no lethal line: cast a castable haste creature in main 1 when no untapped opposing
+     *                           creature can block it
+     *   prowessdefend@NAME  P5  opponent's declare-blockers step: if the unblocked attackers would kill us, remove one
+     *                           with Unsummon or Burst Lightning (kicked or not, several if needed) so we survive
+     * P3 is prowessplan2 (below). */
+    static boolean P1(Player me) { return V3(me) || AiTweaks.on("prowessstoke", me); }
+    static boolean P2(Player me) { return V3(me) || AiTweaks.on("prowesscantrip", me); }
+    static boolean P4(Player me) { return AiTweaks.on("prowesshaste", me); }
+    static boolean P5(Player me) { return AiTweaks.on("prowessdefend", me); }
 
     /** the spell (as chosen) draws, digs, scries or surveils */
     static boolean cantrip(SpellAbility sa) {
@@ -58,12 +71,12 @@ public class ProwessBrain {
 
     /** a held instant: prowessplan's test (no targets), and with prowessplan3 it must also draw */
     static boolean held(Player me, SpellAbility sa) {
-        return !AiTweaks.targets(sa) && (!V3(me) || cantrip(sa));
+        return !AiTweaks.targets(sa) && (!P2(me) || cantrip(sa));
     }
 
     /** prowessplan3 (b): "discard your hand, then draw" that discards 3+ other cards */
     static boolean dumpsHand(Player me, SpellAbility sa) {
-        if (!V3(me) || sa.getApi() != ApiType.Discard || !"Hand".equals(sa.getParam("Mode"))) return false;
+        if (!P1(me) || sa.getApi() != ApiType.Discard || !"Hand".equals(sa.getParam("Mode"))) return false;
         int other = 0;
         for (Card c : me.getCardsIn(ZoneType.Hand)) if (c != sa.getHostCard()) other++;
         return other >= 3;
@@ -298,10 +311,13 @@ public class ProwessBrain {
         Player op = opponent(me);
         if (op == null) return null;
         PhaseType ph = g.getPhaseHandler().getPhase();
-        if (!g.getPhaseHandler().isPlayerTurn(me)) return ph == PhaseType.END_OF_TURN ? endStep(me) : null;
+        if (!g.getPhaseHandler().isPlayerTurn(me)) {
+            if (ph == PhaseType.COMBAT_DECLARE_BLOCKERS && P5(me)) return guard("prowessdefend", () -> defend(me, op));
+            return ph == PhaseType.END_OF_TURN ? endStep(me) : null;
+        }
         if (ph != PhaseType.MAIN1) return null;
         Line l = lethal(me, op);
-        if (l == null) return null;
+        if (l == null) return P4(me) ? guard("prowesshaste", () -> haste(me, op)) : null;
         // the attack happens: every creature that can attack does
         if (plannedGame != g || plannedTurn != g.getPhaseHandler().getTurn()) planned.clear();
         plannedGame = g; plannedTurn = g.getPhaseHandler().getTurn();
@@ -338,6 +354,103 @@ public class ProwessBrain {
         return null;   // lethal on board: attack (forceAttack)
     }
 
+    /** a new rule's error is counted (RULE_error_TYPE) and the decision left to Forge, never a crashed game */
+    static SpellAbility guard(String rule, java.util.function.Supplier<SpellAbility> f) {
+        try {
+            return f.get();
+        } catch (RuntimeException e) {
+            ControlBrain.count(rule + "_error_" + e.getClass().getSimpleName());
+            return null;
+        }
+    }
+
+    static SpellAbility playable(Player me, SpellAbility sa) {
+        sa.setActivatingPlayer(me);
+        try {
+            return sa.canPlay() && ComputerUtilCost.canPayCost(sa, me, false) ? sa : null;
+        } catch (Exception e) {
+            return null;
+        }
+    }
+
+    /** P4: a haste creature that can attack unblocked this turn goes down before combat */
+    static SpellAbility haste(Player me, Player op) {
+        CardCollection hand = new CardCollection();
+        for (Card c : me.getCardsIn(ZoneType.Hand)) if (c.isCreature() && c.hasKeyword(Keyword.HASTE)) hand.add(c);
+        for (SpellAbility sa : ComputerUtilAbility.getSpellAbilities(hand, me)) {
+            if (!sa.isSpell()) continue;
+            Card h = sa.getHostCard();
+            boolean blockable = false;
+            for (Card b : op.getCreaturesInPlay()) if (b.isUntapped() && canBlock(h, h.getNetPower(), b)) blockable = true;
+            if (blockable || playable(me, sa) == null) continue;
+            ControlBrain.count("prowesshaste_precombat");
+            return sa;
+        }
+        return null;
+    }
+
+    /** P5: the unblocked attackers would kill us: remove one (the biggest whose removal saves us) with the cheapest set of
+     *  our removal that can (Unsummon, or Burst Lightning kicked/unkicked); cast its biggest spell, the rule runs again
+     *  after it resolves */
+    static SpellAbility defend(Player me, Player op) {
+        Game g = me.getGame();
+        Combat combat = g.getCombat();
+        if (combat == null || !g.getStack().isEmpty()) return null;
+        List<Card> unblocked = new ArrayList<>();
+        long dmg = 0;
+        for (Card a : combat.getAttackers())
+            if (combat.getDefenderPlayerByAttacker(a) == me && combat.isUnblocked(a)) { unblocked.add(a); dmg += Math.max(0, a.getNetPower()); }
+        if (dmg < me.getLife()) return null;
+        unblocked.sort((x, y) -> Integer.compare(y.getNetPower(), x.getNetPower()));
+        CardCollection hand = new CardCollection();
+        for (Card c : me.getCardsIn(ZoneType.Hand)) if (c.getName().equals(BURST) || c.getName().equals(UNSUMMON)) hand.add(c);
+        List<SpellAbility[]> opts = new ArrayList<>();   // per card: {plain, kicked or null}
+        List<Integer> dmgOf = new ArrayList<>();
+        for (Card c : hand) {
+            SpellAbility plain = null;
+            for (SpellAbility sa : ComputerUtilAbility.getSpellAbilities(new CardCollection(c), me)) if (sa.isSpell()) { plain = sa; break; }
+            if (plain == null) continue;
+            SpellAbility kicked = null;
+            if (c.getName().equals(BURST)) {
+                try {
+                    List<forge.game.spellability.OptionalCostValue> v = forge.game.GameActionUtil.getOptionalCostValues(plain);
+                    if (!v.isEmpty()) kicked = forge.game.GameActionUtil.addOptionalCosts(plain, v);
+                } catch (Exception e) { kicked = null; }
+            }
+            opts.add(new SpellAbility[]{plain, kicked});
+            dmgOf.add(c.getName().equals(UNSUMMON) ? 99 : 2);
+        }
+        int mana = mana(me), n = opts.size();
+        if (n == 0) return null;
+        for (Card a : unblocked) {
+            if (dmg - Math.max(0, a.getNetPower()) >= me.getLife()) continue;   // removing it alone does not save us
+            int need = a.getNetToughness() - a.getDamage();
+            int bestCost = Integer.MAX_VALUE; SpellAbility bestFirst = null;
+            int combos = 1; for (int i = 0; i < n; i++) combos *= 3;   // per card: unused, plain, kicked
+            for (int m = 1; m < combos; m++) {
+                int x = m, cost = 0, d = 0, bigD = -1; SpellAbility big = null; boolean ok = true;
+                for (int i = 0; i < n && ok; i++, x /= 3) {
+                    int pick = x % 3;
+                    if (pick == 0) continue;
+                    SpellAbility sa = opts.get(i)[pick - 1];
+                    if (sa == null) { ok = false; break; }
+                    int dd = pick == 2 ? 4 : dmgOf.get(i), cc = pick == 2 ? 5 : 1;
+                    if (!sa.canTarget(a)) { ok = false; break; }
+                    cost += cc; d += dd;
+                    if (dd > bigD) { bigD = dd; big = sa; }
+                }
+                if (!ok || cost > mana || d < need || cost >= bestCost) continue;
+                bestCost = cost; bestFirst = big;
+            }
+            if (bestFirst != null && playable(me, bestFirst) != null) {
+                bestFirst.resetTargets(); bestFirst.getTargets().add(a);
+                ControlBrain.count("prowessdefend_removal");
+                return bestFirst;
+            }
+        }
+        return null;
+    }
+
     /** opponent's end step: cast held instant cantrips */
     static SpellAbility endStep(Player me) {
         CardCollection hand = new CardCollection();
@@ -367,7 +480,7 @@ public class ProwessBrain {
             if (h == null || h.getController() != me || !sa.isSpell()) continue;
             if (h.getName().equals(CRAB)) { ControlBrain.count("prowessplan_hold_crab"); return null; }
             if (h.isInstant() && !h.isCreature() && held(me, sa)) { ControlBrain.count("prowessplan_hold_cantrip"); return null; }
-            if (dumpsHand(me, sa)) { ControlBrain.count("prowessplan3_no_hand_dump"); return null; }
+            if (dumpsHand(me, sa)) { ControlBrain.count("prowessstoke_no_hand_dump"); return null; }
             if (h.getName().equals(BURST) && sa.getTargets() != null)
                 for (Object t : sa.getTargets()) if (t instanceof Player) { ControlBrain.count("prowessplan_no_face_burn"); return null; }
         }
