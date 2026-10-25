@@ -67,6 +67,7 @@ import java.util.List;
  *  the opponent's end step (any deck; each line names the deck, the colours of untapped mana and which rule decided: by=...).
  * lftrace@NAME — LandfallBrain.trace: state snapshots at our main-phase decisions (for agent scoring), changes nothing.
  * lfaudit@NAME — LandfallBrain.audit: counts Landfall misplays (mis_*), changes nothing.
+ * crowdno[@NAME] — never take the counter on an opponent's "may put a counter on this" trigger (Cheering Crowd).
  * landseq17@NAME — landseq7 + landseq5 Resolve fix + doublings last (the z>=1.0 bundle).
  * landseq16@NAME — landseq14 + Harmonizer doublings resolve after our other landfall triggers.
  * landseq14/15@NAME — landseq11 with the Ba Sing Se ability fix / + crack-back check that defers to Forge's lethal judgement.
@@ -427,6 +428,10 @@ public class AiTweaks {
         @Override
         public boolean payCostToPreventEffect(forge.game.cost.Cost cost, SpellAbility sa, boolean alreadyPaid,
                                               forge.util.collect.FCollectionView<Player> allPayers) {
+            if (on("crowdno", getPlayer()) && feedsOpponent(cost, sa, getPlayer())) {
+                ControlBrain.count("crowdno");
+                return false;
+            }
             if (on("control", getPlayer())) {   // "control@NAME" (2026-10-25): ControlBrain for one deck only
                 Boolean pay = ControlBrain.payShock(cost, sa, getPlayer());
                 if (pay != null) {
@@ -436,6 +441,21 @@ public class AiTweaks {
             }
             return simSafe(() -> super.payCostToPreventEffect(cost, sa, alreadyPaid, allPayers));
         }
+    }
+
+    /**
+     * crowdno (2026-10-25, sp12-s10b scan: Forge's AI took the counter on the OPPONENT's Cheering Crowd 8 times in 3 of
+     * 10 games, mostly for {C} it never spent; the Crowd then hit for 16 and 11): never pay a "may put a counter on this"
+     * cost (UnlessSwitched AddCounter) on a card an opponent controls. The counter is the opponent's for good; the mana
+     * is ours for one phase.
+     */
+    static boolean feedsOpponent(forge.game.cost.Cost cost, SpellAbility sa, Player me) {
+        forge.game.card.Card host = sa.getHostCard();
+        if (host == null || host.getController() == null || !host.getController().isOpponentOf(me)) return false;
+        if (!sa.hasParam("UnlessSwitched")) return false;
+        for (forge.game.cost.CostPart p : cost.getCostParts())
+            if (p instanceof forge.game.cost.CostPutCounter) return true;
+        return false;
     }
 
     /**
