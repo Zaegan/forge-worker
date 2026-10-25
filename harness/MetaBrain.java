@@ -18,6 +18,15 @@ import java.util.List;
  *                          graveyard; every Betrayal in the scan was cast that way, 6 games)
  *   dimirlethal@NAME   D2  attack with everything when the all-out attack is lethal even if the opponent blocks as well
  *                          as it can (one game went 4 turns without an attack, the opponent at 2 and no blockers)
+ *   From scan gl-s10 (Orzhov Lifegain vs Mono-Green Landfall):
+ *   lifeshock@NAME      G1  Godless Shrine: pay 2 life on our turn when a spell in hand could be cast this turn and
+ *                           life is 6+ (or 12+ any time); and play a Plains first when the Shrine would enter tapped
+ *   lifeprecombat@NAME  G2  main 1, Forge would go to combat, the opponent has no untapped creature: cast our castable
+ *                           creature first (ETB gains, drains and counters before damage)
+ *   lifeorder@NAME      G3  a gain source (Hinterland Sanctifier, Case of the Uneaten Feast) before a creature spell
+ *                           when there is mana for both
+ *   lifewarp@NAME       G4  no Haliya warp outside main 1 or with nothing able to attack: a castable 1-2 mana
+ *                           permanent instead, else nothing
  * Only public information is used: the board, life totals and our own hand.
  */
 public class MetaBrain {
@@ -26,7 +35,48 @@ public class MetaBrain {
     static boolean a1(Player p) { return AiTweaks.on("azoriushold", p); }
     static boolean d1(Player p) { return AiTweaks.on("dimirbetrayal", p); }
     static boolean d2(Player p) { return AiTweaks.on("dimirlethal", p); }
-    static boolean any(Player p) { return a1(p) || d1(p) || d2(p); }
+    static boolean g1(Player p) { return AiTweaks.on("lifeshock", p); }
+    static boolean g2(Player p) { return AiTweaks.on("lifeprecombat", p); }
+    static boolean g3(Player p) { return AiTweaks.on("lifeorder", p); }
+    static boolean g4(Player p) { return AiTweaks.on("lifewarp", p); }
+    static boolean any(Player p) { return a1(p) || d1(p) || d2(p) || g1(p) || g2(p) || g3(p) || g4(p); }
+    static final String SHRINE = "Godless Shrine", HALIYA = "Haliya, Guided by Light";
+    static final java.util.Set<String> GAIN_SOURCES = java.util.Set.of("Hinterland Sanctifier", "Case of the Uneaten Feast");
+
+    static int untapped(Player me) {
+        return (int) me.getCardsIn(forge.game.zone.ZoneType.Battlefield).stream().filter(c -> c.isLand() && c.isUntapped()).count();
+    }
+
+    /** a nonland spell in hand that could be cast with one more untapped land */
+    static boolean spellFor(Player me, int mana) {
+        for (Card c : me.getCardsIn(forge.game.zone.ZoneType.Hand)) if (!c.isLand() && c.getCMC() >= 1 && c.getCMC() <= mana) return true;
+        return false;
+    }
+
+    /** G1: pay the Shrine's 2 life? null: not ours to decide */
+    static Boolean payShrine(forge.game.cost.Cost cost, SpellAbility sa, Player me) {
+        if (!g1(me) || sa == null || sa.getHostCard() == null || !sa.getHostCard().getName().equals(SHRINE)
+                || !cost.toSimpleString().contains("2 life")) return null;
+        boolean ours = me.getGame().getPhaseHandler().isPlayerTurn(me);
+        boolean pay = me.getLife() >= 12 || ours && me.getLife() >= 6 && spellFor(me, untapped(me) + 1);
+        ControlBrain.count(pay ? "lifeshock_paid" : "lifeshock_tapped");
+        return pay;
+    }
+
+    /** castable spells of our hand cards matching P */
+    static List<SpellAbility> castableHand(Player me, java.util.function.Predicate<Card> p) {
+        forge.game.card.CardCollection cs = new forge.game.card.CardCollection();
+        for (Card c : me.getCardsIn(forge.game.zone.ZoneType.Hand)) if (p.test(c)) cs.add(c);
+        List<SpellAbility> out = new java.util.ArrayList<>();
+        for (SpellAbility sa : forge.ai.ComputerUtilAbility.getSpellAbilities(cs, me)) {
+            if (!sa.isSpell() || LandfallBrain.isWarp(sa)) continue;
+            sa.setActivatingPlayer(me);
+            try {
+                if (sa.canPlay() && forge.ai.ComputerUtilCost.canPayCost(sa, me, false)) out.add(sa);
+            } catch (Exception e) { }
+        }
+        return out;
+    }
 
     /** the modes chosen for a modal spell (spree/charm), plus its sub-abilities */
     static boolean hasMode(SpellAbility sa, ApiType api) {
@@ -38,9 +88,37 @@ public class MetaBrain {
 
     /** vetoes on Forge's chosen play (null: pass instead) */
     static List<SpellAbility> post(Player me, List<SpellAbility> ai) {
-        if (ai == null || ai.isEmpty()) return ai;
         Game g = me.getGame();
         Player op = ProwessBrain.opponent(me);
+        boolean main1 = g.getPhaseHandler().isPlayerTurn(me) && g.getPhaseHandler().getPhase() == PhaseType.MAIN1 && g.getStack().isEmpty();
+        if (g2(me) && main1 && (ai == null || ai.isEmpty()) && op != null && op.getCreaturesInPlay().stream().noneMatch(Card::isUntapped)) {
+            List<SpellAbility> cr = castableHand(me, c -> c.isCreature());
+            cr.sort((x, y) -> Integer.compare(y.getHostCard().getCMC(), x.getHostCard().getCMC()));
+            if (!cr.isEmpty()) { ControlBrain.count("lifeprecombat_cast"); return List.of(cr.get(0)); }
+        }
+        if (ai == null || ai.isEmpty()) return ai;
+        SpellAbility pick = ai.get(0);
+        Card ph = pick.getHostCard();
+        if (g1(me) && pick.isLandAbility() && ph != null && ph.getName().equals(SHRINE) && !(me.getLife() >= 6 && spellFor(me, untapped(me) + 1))) {
+            for (Card c : me.getCardsIn(forge.game.zone.ZoneType.Hand))   // the Shrine would enter tapped: a Plains first
+                if (c.getName().equals("Plains"))
+                    for (SpellAbility sa : c.getAllPossibleAbilities(me, true))
+                        if (sa.isLandAbility() && sa.canPlay() && me.canPlayLand(c, false, sa)) { ControlBrain.count("lifeshock_plains_first"); return List.of(sa); }
+        }
+        if (g4(me) && pick.isSpell() && ph != null && ph.getName().equals(HALIYA) && LandfallBrain.isWarp(pick)) {
+            boolean attack = main1 && me.getCreaturesInPlay().stream().anyMatch(LandfallBrain::canAttackThisTurn);
+            if (!attack) {
+                List<SpellAbility> cheap = castableHand(me, c -> !c.isLand() && !c.isInstant() && !c.isSorcery() && c.getCMC() <= 2 && !c.getName().equals(HALIYA));
+                ControlBrain.count("lifewarp_vetoed");
+                return cheap.isEmpty() ? null : List.of(cheap.get(0));
+            }
+        }
+        if (g3(me) && pick.isSpell() && ph != null && ph.isCreature() && !GAIN_SOURCES.contains(ph.getName())) {
+            List<SpellAbility> src = castableHand(me, c -> GAIN_SOURCES.contains(c.getName()));
+            int cost = pick.getPayCosts() == null || pick.getPayCosts().getTotalMana() == null ? ph.getCMC() : pick.getPayCosts().getTotalMana().getCMC();
+            for (SpellAbility sa : src)
+                if (untapped(me) >= cost + sa.getHostCard().getCMC()) { ControlBrain.count("lifeorder_source_first"); return List.of(sa); }
+        }
         for (SpellAbility sa : ai) {
             Card h = sa.getHostCard();
             if (h == null || h.getController() != me || !sa.isSpell()) continue;

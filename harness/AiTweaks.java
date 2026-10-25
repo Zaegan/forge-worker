@@ -50,6 +50,8 @@ import java.util.List;
  *   creature that can't attack yet, others on our best attacker; after combat, on any creature).
  * prowessplan — Izzet Prowess (ProwessBrain): each turn "can we win this turn?" (lethal search over cheap spells, burn
  *   targets and Eddymurk Crab, worst-case blocks); if so, cast the line and attack with everything; if not, set-up mode.
+ * lifeshock / lifeprecombat / lifeorder / lifewarp @NAME — Lifegain G1-G4 (MetaBrain); landtunnel / landlethal @NAME —
+ *   Landfall F1, F2 (LandfallBrain).
  * azoriushold / dimirbetrayal / dimirlethal @NAME — stock meta decks' hypotheses A1, D1, D2 (MetaBrain).
  * prowessstoke / prowesscantrip / prowesshaste / prowessdefend @NAME — Prowess hypotheses P1, P2, P4, P5, one switch each
  *   (add-ons to prowessplan; ProwessBrain). prowessplan2 is P3.
@@ -222,6 +224,8 @@ public class AiTweaks {
         @Override
         public List<SpellAbility> chooseSpellAbilityToPlay() {
             src = "forge";
+            if (LandfallBrain.f1(getPlayer()))
+                try { LandfallBrain.retargetStroke(getPlayer()); } catch (RuntimeException e) { ControlBrain.count("landtunnel_error_" + e.getClass().getSimpleName()); }
             List<SpellAbility> r = choose0();
             if (on("spelltrace", getPlayer())) LandfallBrain.trace2(getPlayer(), r, src);
             return r;
@@ -309,6 +313,8 @@ public class AiTweaks {
             ai = post("metaplan", ai, MetaBrain.any(getPlayer()) ? MetaBrain.post(getPlayer(), ai) : ai);
             ai = post("landseq", ai, on("landseq", getPlayer()) ? LandfallBrain.seq(getPlayer(), ai) : ai);
             ai = post("landseq", ai, LandfallBrain.seqOn(getPlayer()) ? LandfallBrain.seq2(getPlayer(), ai) : ai);
+            ai = post("landtunnel", ai, LandfallBrain.f1(getPlayer()) ? LandfallBrain.tunnelFirst(getPlayer(), ai) : ai);
+            ai = post("landlethal", ai, LandfallBrain.f2(getPlayer()) ? LandfallBrain.lethalFirst(getPlayer(), ai) : ai);
             if (on("edgargrow", getPlayer()) && ai != null && !ai.isEmpty() && holdForEdgar(getPlayer(), ai.get(0))) {
                 ControlBrain.count("edgargrow_pass");
                 src = "edgargrow";
@@ -416,6 +422,7 @@ public class AiTweaks {
             if (SpellBrain.on4(getPlayer())) SpellBrain.forceAttack(getPlayer(), combat);
             if (MetaBrain.d2(getPlayer())) MetaBrain.forceAttack(getPlayer(), combat);
             if (LandfallBrain.v3On(getPlayer())) LandfallBrain.attack3(getPlayer(), combat);
+            if (LandfallBrain.f2(getPlayer())) LandfallBrain.lethalAttack(getPlayer(), combat);
             if (on("landseq10", getPlayer())) LandfallBrain.ouroAttack(getPlayer(), combat);
             if (on("landseq12", getPlayer()) || on("landseq13", getPlayer())) LandfallBrain.crackAttack(getPlayer(), combat, on("landseq13", getPlayer()));
             if (on("landseq15", getPlayer())) LandfallBrain.crackAttack15(getPlayer(), combat);
@@ -464,6 +471,11 @@ public class AiTweaks {
             if (on("crowdno", getPlayer()) && feedsOpponent(cost, sa, getPlayer())) {
                 ControlBrain.count("crowdno");
                 return false;
+            }
+            Boolean shrine = MetaBrain.payShrine(cost, sa, getPlayer());   // lifeshock@NAME (G1)
+            if (shrine != null) {
+                if (!shrine || !ComputerUtilCost.canPayCost(cost, sa, getPlayer(), false)) return false;
+                return new forge.game.cost.CostPayment(cost, sa).payComputerCosts(new forge.ai.AiCostDecision(getPlayer(), sa, false));
             }
             if (on("control", getPlayer())) {   // "control@NAME" (2026-10-25): ControlBrain for one deck only
                 Boolean pay = ControlBrain.payShock(cost, sa, getPlayer());

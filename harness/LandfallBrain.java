@@ -1103,6 +1103,99 @@ public class LandfallBrain {
         return ai;
     }
 
+    /* From scan gl-s10 (2026-10-25), two missed lethals the single-target lethal plan (landseq3) cannot see:
+     *   landtunnel@NAME   F1  when Forge's next step in main 1 is another land drop, a fetch crack or passing, and a
+     *                         creature of ours with power 2 or less would reach lethal power from the turn's remaining
+     *                         landfalls, play Escape Tunnel first: the "landfall" stroke then makes that creature
+     *                         unblockable while it is still small (g0 T12: Passage first left the Chocobo blockable)
+     *   landlethal@NAME   F2  when the all-out attack is already lethal against the opponent's best blocks, cast
+     *                         nothing more before combat (no attacker tapped for mana) and attack with everything
+     *                         (g8 T11: the 12/12 earthbent land was tapped for Earthbender Ascension, no attack) */
+    static boolean f1(Player p) { return AiTweaks.on("landtunnel", p); }
+    static boolean f2(Player p) { return AiTweaks.on("landlethal", p); }
+
+    static List<SpellAbility> tunnelFirst(Player me, List<SpellAbility> ai) {
+        Game g = me.getGame();
+        if (!f1(me) || !g.getPhaseHandler().isPlayerTurn(me) || g.getPhaseHandler().getPhase() != PhaseType.MAIN1 || !g.getStack().isEmpty()) return ai;
+        SpellAbility pick = ai == null || ai.isEmpty() ? null : ai.get(0);
+        boolean landStep = pick == null || pick.isLandAbility() || (pick.getHostCard() != null && fetchType(pick.getHostCard()) && pick.getApi() == ApiType.ChangeZone);
+        if (!landStep || (pick != null && pick.getHostCard() != null && named(pick.getHostCard(), TUNNEL))) return ai;
+        Player op = ProwessBrain.opponent(me);
+        if (op == null) return ai;
+        int lf = Math.max(0, remainingLandfalls(me, null) - 1);   // the Tunnel is spent on the stroke, not cracked
+        long harm = count(me, ZoneType.Battlefield, HARMONIZER);
+        boolean lethal = false;
+        for (Card x : me.getCreaturesInPlay())
+            if (canAttackThisTurn(x) && x.getNetPower() <= 2 && project(x, lf, harm) >= op.getLife()) lethal = true;
+        if (!lethal) return ai;
+        boolean drop = me.getMaxLandPlaysInfinite() || me.getLandsPlayedThisTurn() < me.getMaxLandPlays();
+        if (!drop) return ai;
+        List<Card> tunnels = new ArrayList<>();   // in hand, or in the graveyard with Icetill Explorer (as landPlay)
+        for (Card c : me.getCardsIn(ZoneType.Hand)) if (named(c, TUNNEL)) tunnels.add(c);
+        if (count(me, ZoneType.Battlefield, EXPLORER) > 0)
+            for (Card c : me.getCardsIn(ZoneType.Graveyard)) if (named(c, TUNNEL)) tunnels.add(c);
+        for (Card c : tunnels) {
+            for (SpellAbility sa : c.getAllPossibleAbilities(me, true)) {
+                if (!sa.isLandAbility()) continue;
+                try {
+                    if (sa.canPlay() && me.canPlayLand(c, false, sa)) { ControlBrain.count("landtunnel_first"); return List.of(sa); }
+                } catch (Exception e) {
+                    continue;
+                }
+            }
+        }
+        return ai;
+    }
+
+    /** F1 (with landtunnel): Forge's AI picks the targets of simultaneous triggers itself (neither playTrigger nor
+     *  chooseTargetsFor is called), so the stroke's "every Harmonizer doubling on the stroke creature" (rule "landfall")
+     *  never acted (2026-10-25: no stroke_doubling in the scanned games). We get priority while those triggers wait on
+     *  the stack: while a stroke is on, each of our Harmonizer doublings there is retargeted to the stroke creature. */
+    static void retargetStroke(Player me) {
+        if (!strokeOn(me)) return;
+        for (forge.game.spellability.SpellAbilityStackInstance si : me.getGame().getStack()) {
+            SpellAbility sa = si.getSpellAbility();
+            if (sa == null || si.getActivatingPlayer() != me || sa.getHostCard() == null || !named(sa.getHostCard(), HARMONIZER)
+                    || !sa.usesTargeting() || !sa.canTarget(strokeTarget)) continue;
+            if (sa.getTargets() != null && sa.getTargets().contains(strokeTarget)) continue;
+            forge.game.spellability.TargetChoices nt = new forge.game.spellability.TargetChoices();
+            nt.add(strokeTarget);
+            try {
+                sa.resetTargets();
+                sa.getTargets().add(strokeTarget);   // what resolves (the stack entry's own record alone is not enough)
+                si.updateTarget(nt, new java.util.HashSet<>());
+                ControlBrain.count("landtunnel_doubling");
+            } catch (RuntimeException e) {
+                ControlBrain.count("landtunnel_error_" + e.getClass().getSimpleName());
+            }
+        }
+    }
+
+    static boolean boardLethal(Player me) {
+        Player op = ProwessBrain.opponent(me);
+        return op != null && SpellBrain.unblocked(me, op, java.util.Collections.emptyList()) >= op.getLife();
+    }
+
+    static List<SpellAbility> lethalFirst(Player me, List<SpellAbility> ai) {
+        Game g = me.getGame();
+        if (!f2(me) || ai == null || ai.isEmpty() || !g.getPhaseHandler().isPlayerTurn(me) || g.getPhaseHandler().getPhase() != PhaseType.MAIN1
+                || !g.getStack().isEmpty()) return ai;
+        SpellAbility pick = ai.get(0);
+        if (pick.isLandAbility() || !boardLethal(me)) return ai;
+        ControlBrain.count("landlethal_held");
+        return null;
+    }
+
+    static void lethalAttack(Player me, forge.game.combat.Combat combat) {
+        if (!f2(me) || !boardLethal(me)) return;
+        Player op = ProwessBrain.opponent(me);
+        for (Card c : me.getCreaturesInPlay())
+            if (!combat.isAttacking(c) && canAttackThisTurn(c) && CombatUtil.canAttack(c, op)) {
+                combat.addAttacker(c, op);
+                ControlBrain.count("landlethal_attacker");
+            }
+    }
+
     static SpellAbility landPlay(Player me, boolean fetchOnly) {
         boolean drop = me.getMaxLandPlaysInfinite() || me.getLandsPlayedThisTurn() < me.getMaxLandPlays();
         if (!drop) return null;
