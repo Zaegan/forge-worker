@@ -85,6 +85,8 @@ import java.util.List;
  * manahold — ManaHold: reserve the lands for Ferocity of the Hunt at our main phase 1 (use with oozeeot, whose
  * end-of-turn cast is the scheduled fallback).
  *
+ * control@NAME — ControlBrain only for the deck named *NAME* (2026-10-25: Azorius Control has Day of Judgment, so plain
+ *  "control" would pilot it untested); plain "control" is unchanged (every control deck, plus the field rules).
  * protect — ProtectBrain's uses of Tam, Mindful First-Year and Ferocity of the Hunt. Several tweaks can be combined:
  * -Dforge.sim.tweaks=spiderham,control,protect
  */
@@ -262,7 +264,7 @@ public class AiTweaks {
                 SpellAbility p = ProtectBrain.choose(getPlayer());
                 if (p != null) return List.of(p);
             }
-            if (has("control")) {
+            if (on("control", getPlayer())) {   // "control@NAME" (2026-10-25): ControlBrain for one deck only
                 if (ControlBrain.holdUntilMain(getPlayer())) return null;
                 SpellAbility mine = ControlBrain.choose(getAi(), getPlayer());
                 if (mine != null) return List.of(mine);
@@ -402,7 +404,7 @@ public class AiTweaks {
         @Override
         public boolean payCostToPreventEffect(forge.game.cost.Cost cost, SpellAbility sa, boolean alreadyPaid,
                                               forge.util.collect.FCollectionView<Player> allPayers) {
-            if (has("control")) {
+            if (on("control", getPlayer())) {   // "control@NAME" (2026-10-25): ControlBrain for one deck only
                 Boolean pay = ControlBrain.payShock(cost, sa, getPlayer());
                 if (pay != null) {
                     if (!pay || !ComputerUtilCost.canPayCost(cost, sa, getPlayer(), false)) return false;
