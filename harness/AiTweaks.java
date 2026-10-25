@@ -63,7 +63,8 @@ import java.util.List;
  *  Spell Snare discipline / Prismari Charm damage over bounce.
  * fetchplay@NAME — FetchBrain: Zendikar fetchlands held and cracked only for a reason (Bloodghast, landfall attacker,
  *  mana, Searing Blaze on the opponent's turn), else at the opponent's end step.
- * spelltrace@NAME — LandfallBrain.trace2: snapshots at every decision, our main-phase passes and passes on opponent spells (any deck).
+ * spelltrace@NAME — LandfallBrain.trace2: snapshots at every decision, our main-phase passes, passes on opponent spells and at
+ *  the opponent's end step (any deck; each line names the deck, the colours of untapped mana and which rule decided: by=...).
  * lftrace@NAME — LandfallBrain.trace: state snapshots at our main-phase decisions (for agent scoring), changes nothing.
  * lfaudit@NAME — LandfallBrain.audit: counts Landfall misplays (mis_*), changes nothing.
  * landseq17@NAME — landseq7 + landseq5 Resolve fix + doublings last (the z>=1.0 bundle).
@@ -202,8 +203,26 @@ public class AiTweaks {
                     ((LobbyPlayerAi) getPlayer().getLobbyPlayer()).setAiProfile("Reckless");
         }
 
+        /** which part of the harness made this decision (spelltrace's by=..., 2026-10-25): "forge" unless a rule did */
+        String src = "forge";
+
+        List<SpellAbility> by(String tag, SpellAbility sa) { src = tag; return List.of(sa); }
+
+        /** a rule's change to Forge's choice: tags the decision "RULE-veto" or "RULE-replaced" */
+        List<SpellAbility> post(String rule, List<SpellAbility> was, List<SpellAbility> now) {
+            if (now != was) src = rule + ((now == null || now.isEmpty()) ? "-veto" : "-replaced");
+            return now;
+        }
+
         @Override
         public List<SpellAbility> chooseSpellAbilityToPlay() {
+            src = "forge";
+            List<SpellAbility> r = choose0();
+            if (on("spelltrace", getPlayer())) LandfallBrain.trace2(getPlayer(), r, src);
+            return r;
+        }
+
+        List<SpellAbility> choose0() {
             checkProfile();
             if (!simChecked) {   // simhybrid / simfull: Forge's search-based AI, for the Izzet Leyline player only
                 simChecked = true;
@@ -216,61 +235,62 @@ public class AiTweaks {
             if (on("flashhold", getPlayer())) {
                 ManaHold.planFlash(getPlayer());
                 SpellAbility b = flashBlocker(getPlayer());
-                if (b != null) return List.of(b);
+                if (b != null) return by("flashhold", b);
             }
             if (on("flasheot", getPlayer()) || on("flashhold", getPlayer())) {
                 if (on("flashhold", getPlayer()) && isOppEndStep(getPlayer())) ManaHold.release(getPlayer());
                 SpellAbility f = flashAtEndOfTurn(getPlayer());
-                if (f != null) return List.of(f);
+                if (f != null) return by("flasheot", f);
             }
             if (on("dwarvesetb2", getPlayer())) removalWatch(getPlayer());
             if (on("dwarvesetb", getPlayer()) || on("dwarvesetb2", getPlayer())) {
                 SpellAbility d = dwarvesEtb(getPlayer());
-                if (d != null) return List.of(d);
+                if (d != null) return by("dwarvesetb", d);
             }
             if (ProwessBrain.ON(getPlayer())) {
                 SpellAbility pw = ProwessBrain.choose(getPlayer());
-                if (pw != null) return List.of(pw);
+                if (pw != null) return by("prowessplan", pw);
             }
             if (SpellBrain.any(getPlayer())) {
                 SpellAbility sb = SpellBrain.choose(getPlayer());
-                if (sb != null) return List.of(sb);
+                if (sb != null) return by("spellplan", sb);
             }
             if (FetchBrain.ON(getPlayer())) {
                 SpellAbility fb = FetchBrain.choose(getPlayer());
-                if (fb != null) return List.of(fb);
+                if (fb != null) return by("fetchplay", fb);
             }
             if (on("prowesspre", getPlayer())) {
                 SpellAbility pp = prowessPrecombat(getPlayer());
-                if (pp != null) return List.of(pp);
+                if (pp != null) return by("prowesspre", pp);
             }
             if (has("manahold")) ManaHold.plan(getPlayer());
             if (has("spiderham")) {
                 SpellAbility bite = spiderHamBite(getPlayer());
                 if (bite != null) {
                     bites++;
-                    return List.of(bite);
+                    return by("spiderham", bite);
                 }
             }
             if (has("leyline")) {
                 SpellAbility l = LeylineBrain.choose(getPlayer());
-                if (l != null) return List.of(l);
+                if (l != null) return by("leyline", l);
             }
             if (has("landfall")) {
                 SpellAbility s = LandfallBrain.choose(getPlayer());
-                if (s != null) return List.of(s);
+                if (s != null) return by("landfall", s);
             }
             if (has("protect")) {
                 SpellAbility p = ProtectBrain.choose(getPlayer());
-                if (p != null) return List.of(p);
+                if (p != null) return by("protect", p);
             }
             if (on("control", getPlayer())) {   // "control@NAME" (2026-10-25): ControlBrain for one deck only
-                if (ControlBrain.holdUntilMain(getPlayer())) return null;
+                if (ControlBrain.holdUntilMain(getPlayer())) { src = "control-hold"; return null; }
                 SpellAbility mine = ControlBrain.choose(getAi(), getPlayer());
-                if (mine != null) return List.of(mine);
+                if (mine != null) return by("control", mine);
                 List<SpellAbility> ai = aiChoose();
                 if (ai != null && ai.stream().anyMatch(ControlBrain::vetoed)) {
                     ControlBrain.count("hall_veto");
+                    src = "control-veto";
                     return null;
                 }
                 ai = has("leyline") ? LeylineBrain.post(getPlayer(), ai) : ai;
@@ -278,24 +298,27 @@ public class AiTweaks {
                 return spendIfIdle(getPlayer(), ai);
             }
             List<SpellAbility> ai = aiChoose();
-            ai = has("leyline") ? LeylineBrain.post(getPlayer(), ai) : ai;
-            ai = ProwessBrain.ON(getPlayer()) ? ProwessBrain.post(getPlayer(), ai) : ai;
-            ai = SpellBrain.any(getPlayer()) ? SpellBrain.post(getPlayer(), ai) : ai;
-            ai = on("landseq", getPlayer()) ? LandfallBrain.seq(getPlayer(), ai) : ai;
-            ai = LandfallBrain.seqOn(getPlayer()) ? LandfallBrain.seq2(getPlayer(), ai) : ai;
+            ai = post("leyline", ai, has("leyline") ? LeylineBrain.post(getPlayer(), ai) : ai);
+            ai = post("prowessplan", ai, ProwessBrain.ON(getPlayer()) ? ProwessBrain.post(getPlayer(), ai) : ai);
+            ai = post("spellplan", ai, SpellBrain.any(getPlayer()) ? SpellBrain.post(getPlayer(), ai) : ai);
+            ai = post("landseq", ai, on("landseq", getPlayer()) ? LandfallBrain.seq(getPlayer(), ai) : ai);
+            ai = post("landseq", ai, LandfallBrain.seqOn(getPlayer()) ? LandfallBrain.seq2(getPlayer(), ai) : ai);
             if (on("edgargrow", getPlayer()) && ai != null && !ai.isEmpty() && holdForEdgar(getPlayer(), ai.get(0))) {
                 ControlBrain.count("edgargrow_pass");
+                src = "edgargrow";
                 return null;
             }
             if (on("lordtarget", getPlayer()) && ai != null) for (SpellAbility x : ai) lordRetarget(getPlayer(), x);
             if (on("dwarvesetb2", getPlayer()) && ai != null && holdThorin(getPlayer())
                     && ai.stream().anyMatch(x -> x.getHostCard() != null && x.getHostCard().getName().equals("Thorin, Mountain-king"))) {
                 ControlBrain.count("dwarvesetb2_hold");
+                src = "dwarvesetb2";
                 return null;
             }
+            List<SpellAbility> before = ai;
             ai = spendIfIdle(getPlayer(), ai);
+            if (ai != before) src = "spendmana";
             if (on("lftrace", getPlayer())) LandfallBrain.trace(getPlayer(), ai);
-            if (on("spelltrace", getPlayer())) LandfallBrain.trace2(getPlayer(), ai);
             return on("lfaudit", getPlayer()) ? LandfallBrain.audit(getPlayer(), ai) : ai;
         }
 

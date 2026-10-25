@@ -308,7 +308,7 @@ public class LandfallBrain {
         if (!g.getPhaseHandler().isPlayerTurn(me) || !g.getStack().isEmpty()) return;
         PhaseType ph = g.getPhaseHandler().getPhase();
         if (ph != PhaseType.MAIN1 && ph != PhaseType.MAIN2) return;
-        traceLine(me, ai, "");
+        traceLine(me, ai, "", null);
     }
 
     /**
@@ -317,7 +317,7 @@ public class LandfallBrain {
      * stack, and whenever we pass with an opponent's spell or ability on the stack (choosing not to respond is a
      * decision). The stack, top first, is part of the line. Reads state only, like lftrace.
      */
-    static void trace2(Player me, List<SpellAbility> ai) {
+    static void trace2(Player me, List<SpellAbility> ai, String src) {
         Game g = me.getGame();
         boolean ours = g.getPhaseHandler().isPlayerTurn(me), empty = g.getStack().isEmpty();
         PhaseType ph = g.getPhaseHandler().getPhase();
@@ -330,11 +330,27 @@ public class LandfallBrain {
             if (!mine && st.isEmpty()) oppOnStack = true;   // the top item is the opponent's
             st.add((mine ? "US " : "OPP ") + (h == null ? "?" : h.getName()));
         }
-        if (!acted && !(ours && empty && (ph == PhaseType.MAIN1 || ph == PhaseType.MAIN2)) && !oppOnStack) return;
-        traceLine(me, ai, " stack=[" + String.join("; ", st) + "]");
+        boolean oppEnd = !ours && empty && ph == PhaseType.END_OF_TURN;   // what we left open at the opponent's end step
+        if (!acted && !(ours && empty && (ph == PhaseType.MAIN1 || ph == PhaseType.MAIN2)) && !oppOnStack && !oppEnd) return;
+        traceLine(me, ai, " stack=[" + String.join("; ", st) + "]", src);
     }
 
-    static void traceLine(Player me, List<SpellAbility> ai, String extra) {
+    /** colours an untapped mana source can make, e.g. "UR" (C = colourless) */
+    static String colours(Card c) {
+        java.util.TreeSet<Character> cs = new java.util.TreeSet<>();
+        for (SpellAbility ma : c.getManaAbilities()) {
+            try {
+                String p = ma.getManaPart().isComboMana() ? ma.getManaPart().getComboColors(ma) : ma.getManaPart().getOrigProduced();
+                for (char x : p.toCharArray()) if ("WUBRGC".indexOf(x) >= 0) cs.add(x);
+                if (p.contains("Any")) for (char x : "WUBRG".toCharArray()) cs.add(x);
+            } catch (Exception e) { }
+        }
+        StringBuilder b = new StringBuilder();
+        for (char x : cs) b.append(x);
+        return b.length() == 0 ? "?" : b.toString();
+    }
+
+    static void traceLine(Player me, List<SpellAbility> ai, String extra, String src) {
         Game g = me.getGame();
         PhaseType ph = g.getPhaseHandler().getPhase();
         StringBuilder s = new StringBuilder();
@@ -346,7 +362,11 @@ public class LandfallBrain {
         int mana = 0;
         for (Card c : me.getCardsIn(ZoneType.Battlefield))
             if (c.isUntapped() && !c.getManaAbilities().isEmpty() && (c.isLand() || !c.isSick())) mana++;
-        s.append(" untapped_mana_sources=").append(mana);
+        List<String> col = new ArrayList<>();
+        for (Card c : me.getCardsIn(ZoneType.Battlefield))
+            if (c.isUntapped() && !c.getManaAbilities().isEmpty() && (c.isLand() || !c.isSick())) col.add(colours(c));
+        java.util.Collections.sort(col);
+        s.append(" untapped_mana_sources=").append(mana).append("(").append(String.join(",", col)).append(")");
         s.append(" land_drops=").append(me.getLandsPlayedThisTurn()).append("/").append(me.getMaxLandPlaysInfinite() ? "inf" : String.valueOf(me.getMaxLandPlays()));
         List<String> b = new ArrayList<>();
         for (Card c : me.getCardsIn(ZoneType.Battlefield)) {
@@ -366,7 +386,8 @@ public class LandfallBrain {
         if (op != null) s.append(" opp=[").append(board(op)).append("]");
         String snap = s.toString();
         String choice = ai == null || ai.isEmpty() ? "pass" : choiceText(ai.get(0));
-        String line = "@" + g.getGameLog().getAllEntries().size() + " T" + g.getPhaseHandler().getTurn() + " " + ph + ": " + snap + extra + " -> " + choice;
+        if (src != null && !src.equals("forge")) choice += " {by " + src + "}";
+        String line = "@" + g.getGameLog().getAllEntries().size() + " " + deckTag(me) + " T" + g.getPhaseHandler().getTurn() + " " + ph + ": " + snap + extra + " -> " + choice;
         if ((snap + choice).equals(lastSnap)) return;
         lastSnap = snap + choice;
         ControlBrain.trace.append(line).append("\n");
@@ -412,9 +433,15 @@ public class LandfallBrain {
             for (Card b : combat.getBlockers(a)) bl.add(b.getName() + "#" + b.getId());
             pairs.add(a.getName() + "#" + a.getId() + (bl.isEmpty() ? "" : " blocked by " + String.join(" + ", bl)));
         }
-        ControlBrain.trace.append("@").append(g.getGameLog().getAllEntries().size()).append(" T").append(g.getPhaseHandler().getTurn())
+        ControlBrain.trace.append("@").append(g.getGameLog().getAllEntries().size()).append(" ").append(deckTag(me)).append(" T").append(g.getPhaseHandler().getTurn())
                 .append(" ").append(what).append(": us=[").append(board(me)).append("] opp=[").append(board(op))
                 .append("] -> ").append(pairs.isEmpty() ? "none" : String.join("; ", pairs)).append("\n");
+    }
+
+    /** the deck tag on every trace line ("deck=NAME", 2026-10-25: both seats can be traced) */
+    static String deckTag(Player me) {
+        String d = AiTweaks.deckName(me);
+        return "deck=" + (d == null ? "?" : d.replace(' ', '_'));
     }
 
     static String choiceText(SpellAbility sa) {
