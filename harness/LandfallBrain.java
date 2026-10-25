@@ -353,6 +353,41 @@ public class LandfallBrain {
         return b.length() == 0 ? "?" : b.toString();
     }
 
+    static Game paidGame;
+    static final java.util.Map<Integer, List<String>> pool = new java.util.HashMap<>();
+
+    /** the mana each traced player spends on each spell or ability (2026-10-25: which colour a dual paid). Forge's AI
+     *  rarely gets priority over its own spell, so the payment is read from the game's events: the colours added to a
+     *  player's pool since their last cast are logged at the cast ("PAID") */
+    static void paid(Player me) {
+        Game g = me.getGame();
+        if (paidGame == g) return;
+        paidGame = g; pool.clear();
+        g.subscribeToEvents(new Object() {
+            @com.google.common.eventbus.Subscribe
+            public void on(forge.game.event.GameEvent e) {
+                try {
+                    if (e instanceof forge.game.event.GameEventManaPool mp && mp.mode() == forge.game.event.EventValueChangeType.Added) {
+                        List<String> b = pool.computeIfAbsent(mp.player().getId(), k -> new ArrayList<>());
+                        for (forge.card.MagicColor.Color c : mp.colors()) b.add(c == null ? "?" : c.name().equals("BLUE") ? "U" : c.name().substring(0, 1));
+                    } else if (e instanceof forge.game.event.GameEventSpellAbilityCast sc && sc.si() != null && sc.si().getActivatingPlayer() != null) {
+                        int pid = sc.si().getActivatingPlayer().getId();
+                        List<String> b = pool.remove(pid);
+                        if (b == null || b.isEmpty()) return;
+                        for (Player p : g.getPlayers())
+                            if (p.getId() == pid && AiTweaks.on("spelltrace", p))
+                                ControlBrain.trace.append("@").append(g.getGameLog().getAllEntries().size()).append(" ").append(deckTag(p)).append(" T")
+                                        .append(g.getPhaseHandler().getTurn()).append(" PAID: ")
+                                        .append(sc.sa() == null || sc.sa().getHostCard() == null ? "?" : sc.sa().getHostCard().getName())
+                                        .append(": ").append(String.join(",", b)).append("\n");
+                    }
+                } catch (RuntimeException x) {
+                    ControlBrain.count("trace_paid_error");
+                }
+            }
+        });
+    }
+
     static void traceLine(Player me, List<SpellAbility> ai, String extra, String src) {
         Game g = me.getGame();
         PhaseType ph = g.getPhaseHandler().getPhase();
@@ -386,7 +421,16 @@ public class LandfallBrain {
         s.append(" gy=[").append(String.join("; ", gy)).append("] exile=[").append(String.join("; ", ex)).append("]");
         s.append(" usb=[").append(board(me)).append("]");
         Player op = ProwessBrain.opponent(me);
-        if (op != null) s.append(" opp=[").append(board(op)).append("]");
+        if (op != null) {
+            s.append(" opp=[").append(board(op)).append("]");
+            // the opponent's public zones (2026-10-25: Deep-Cavern Bat's exiled card showed only in the victim's file)
+            List<String> og = new ArrayList<>(), oe = new ArrayList<>();
+            for (Card c : op.getCardsIn(ZoneType.Graveyard)) og.add(c.getName());
+            for (Card c : op.getCardsIn(ZoneType.Exile)) if (!c.isFaceDown()) oe.add(c.getName());
+            java.util.Collections.sort(og); java.util.Collections.sort(oe);
+            s.append(" oppgy=[").append(String.join("; ", og)).append("] oppexile=[").append(String.join("; ", oe)).append("]");
+        }
+        paid(me);
         String snap = s.toString();
         String choice = ai == null || ai.isEmpty() ? "pass" : choiceText(ai.get(0));
         if (src != null && !src.equals("forge")) choice += " {by " + src + "}";
@@ -409,7 +453,7 @@ public class LandfallBrain {
         boolean active = p.getGame().getPhaseHandler().isPlayerTurn(p);   // summoning sickness matters only on its own turn
         for (Card c : p.getCardsIn(ZoneType.Battlefield)) {
             if (c.isLand() && !c.isCreature()) { lands++; if (c.isUntapped()) untapped++; continue; }
-            StringBuilder x = new StringBuilder(c.getName()).append('#').append(c.getId());
+            StringBuilder x = new StringBuilder(c.getName()).append(c.isLand() ? " (land)" : "").append('#').append(c.getId());   // (land): an animated/earthbent land (2026-10-25)
             if (c.isCreature()) {
                 x.append(' ').append(c.getNetPower()).append('/').append(c.getNetToughness());
                 for (forge.game.keyword.Keyword k : KW) if (c.hasKeyword(k)) x.append(' ').append(k.toString().toLowerCase());
