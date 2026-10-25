@@ -60,6 +60,8 @@ import java.util.List;
  * landfall — LandfallBrain's Escape Tunnel + Mightform Harmonizer kill for Mono-Green Landfall.
  * spellplan1/2/3/4/5@NAME — SpellBrain (Izzet Spellementals): Sunderflock before combat / Eddymurk Crab on the opponent's turn /
  *  Opt at the opponent's end step / Crab for lethal, then attack with everything / removal at the opponent's end step.
+ * fetchplay@NAME — FetchBrain: Zendikar fetchlands held and cracked only for a reason (Bloodghast, landfall attacker,
+ *  mana, Searing Blaze on the opponent's turn), else at the opponent's end step.
  * spelltrace@NAME — LandfallBrain.trace2: snapshots at every decision, our main-phase passes and passes on opponent spells (any deck).
  * lftrace@NAME — LandfallBrain.trace: state snapshots at our main-phase decisions (for agent scoring), changes nothing.
  * lfaudit@NAME — LandfallBrain.audit: counts Landfall misplays (mis_*), changes nothing.
@@ -231,6 +233,10 @@ public class AiTweaks {
                 SpellAbility sb = SpellBrain.choose(getPlayer());
                 if (sb != null) return List.of(sb);
             }
+            if (FetchBrain.ON(getPlayer())) {
+                SpellAbility fb = FetchBrain.choose(getPlayer());
+                if (fb != null) return List.of(fb);
+            }
             if (on("prowesspre", getPlayer())) {
                 SpellAbility pp = prowessPrecombat(getPlayer());
                 if (pp != null) return List.of(pp);
@@ -294,6 +300,14 @@ public class AiTweaks {
          *  GameCopier -> StaticAbilityContinuous IndexOutOfBounds on a MayPlayPlayer static; the real game is untouched)
          *  falls back to the ordinary AI for this one decision instead of ending the game as an error draw. */
         List<SpellAbility> aiChoose() {
+            if (FetchBrain.ON(getPlayer())) {   // fetchplay: held fetches are not Forge's to crack
+                List<forge.game.card.Card> hidden = FetchBrain.hide(getPlayer());
+                try {
+                    return simSafe(() -> super.chooseSpellAbilityToPlay());
+                } finally {
+                    for (forge.game.card.Card c : hidden) c.setTapped(false);
+                }
+            }
             return simSafe(() -> super.chooseSpellAbilityToPlay());
         }
 
