@@ -1,6 +1,7 @@
 import forge.ai.ComputerUtilAbility;
 import forge.ai.ComputerUtilCost;
 import forge.game.Game;
+import forge.game.ability.ApiType;
 import forge.game.GameObject;
 import forge.game.card.Card;
 import forge.game.card.CardCollection;
@@ -39,7 +40,34 @@ public class ProwessBrain {
             LEYLINE = "Leyline of Resonance";
 
     /** "prowessplan" (every player) or "prowessplan@NAME" (only the deck named *NAME*: AiTweaks.on) */
-    static boolean ON(Player me) { return AiTweaks.on("prowessplan", me) || V2(me); }
+    static boolean ON(Player me) { return AiTweaks.on("prowessplan", me) || V2(me) || V3(me); }
+    /** prowessplan3 (2026-10-25, scan pz-s10 of Prowess vs Spellementals): prowessplan, plus (a) a held "instant cantrip"
+     *  is one that draws or digs (Secret Identity, a charm whose modes only target, was held and cast at the opponent's
+     *  end step with nothing to target: 2 of 10 games), and (b) no "discard your hand" spell (Stoke Genius, Hearth
+     *  Elemental's adventure) that throws away 3+ other cards for its 2 (Forge's AI did it in 4 of 10 games per seat). */
+    static boolean V3(Player me) { return AiTweaks.on("prowessplan3", me); }
+
+    /** the spell (as chosen) draws, digs, scries or surveils */
+    static boolean cantrip(SpellAbility sa) {
+        for (SpellAbility x = sa; x != null; x = x.getSubAbility()) {
+            ApiType a = x.getApi();
+            if (a == ApiType.Draw || a == ApiType.Dig || a == ApiType.Scry || a == ApiType.Surveil) return true;
+        }
+        return false;
+    }
+
+    /** a held instant: prowessplan's test (no targets), and with prowessplan3 it must also draw */
+    static boolean held(Player me, SpellAbility sa) {
+        return !AiTweaks.targets(sa) && (!V3(me) || cantrip(sa));
+    }
+
+    /** prowessplan3 (b): "discard your hand, then draw" that discards 3+ other cards */
+    static boolean dumpsHand(Player me, SpellAbility sa) {
+        if (!V3(me) || sa.getApi() != ApiType.Discard || !"Hand".equals(sa.getParam("Mode"))) return false;
+        int other = 0;
+        for (Card c : me.getCardsIn(ZoneType.Hand)) if (c != sa.getHostCard()) other++;
+        return other >= 3;
+    }
     /** prowessplan2 (2026-10-23, from the agent games vs the meta Izzet Prowess list): prowessplan, plus Unsummon on a
      *  blocker and Wild Ride (+3/+0 on one attacker) in the lethal search */
     static boolean V2(Player me) { return AiTweaks.on("prowessplan2", me); }
@@ -315,7 +343,7 @@ public class ProwessBrain {
         CardCollection hand = new CardCollection();
         for (Card c : me.getCardsIn(ZoneType.Hand)) if (c.isInstant() && !c.isCreature()) hand.add(c);
         for (SpellAbility sa : ComputerUtilAbility.getSpellAbilities(hand, me)) {
-            if (!sa.isSpell() || AiTweaks.targets(sa)) continue;
+            if (!sa.isSpell() || !held(me, sa)) continue;
             sa.setActivatingPlayer(me);
             try {
                 if (sa.canPlay() && ComputerUtilCost.canPayCost(sa, me, false)) {
@@ -338,7 +366,8 @@ public class ProwessBrain {
             Card h = sa.getHostCard();
             if (h == null || h.getController() != me || !sa.isSpell()) continue;
             if (h.getName().equals(CRAB)) { ControlBrain.count("prowessplan_hold_crab"); return null; }
-            if (h.isInstant() && !h.isCreature() && !AiTweaks.targets(sa)) { ControlBrain.count("prowessplan_hold_cantrip"); return null; }
+            if (h.isInstant() && !h.isCreature() && held(me, sa)) { ControlBrain.count("prowessplan_hold_cantrip"); return null; }
+            if (dumpsHand(me, sa)) { ControlBrain.count("prowessplan3_no_hand_dump"); return null; }
             if (h.getName().equals(BURST) && sa.getTargets() != null)
                 for (Object t : sa.getTargets()) if (t instanceof Player) { ControlBrain.count("prowessplan_no_face_burn"); return null; }
         }
