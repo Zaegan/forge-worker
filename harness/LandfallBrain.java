@@ -340,6 +340,9 @@ public class LandfallBrain {
         java.util.TreeSet<Character> cs = new java.util.TreeSet<>();
         for (SpellAbility ma : c.getManaAbilities()) {
             try {
+                // only abilities usable now (2026-10-25: a Verge's conditional colour was listed without its land type)
+                ma.setActivatingPlayer(c.getController());
+                if (!ma.canPlay()) continue;
                 String p = ma.getManaPart().isComboMana() ? ma.getManaPart().getComboColors(ma) : ma.getManaPart().getOrigProduced();
                 for (char x : p.toCharArray()) if ("WUBRGC".indexOf(x) >= 0) cs.add(x);
                 if (p.contains("Any")) for (char x : "WUBRG".toCharArray()) cs.add(x);

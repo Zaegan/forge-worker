@@ -446,6 +446,19 @@ public class AiTweaks {
             return r;
         }
 
+        @Override
+        public String chooseSomeType(String kind, SpellAbility sa, java.util.Collection<String> valid, boolean isOptional) {
+            String r = super.chooseSomeType(kind, sa, valid, isOptional);
+            if (on("spelltrace", getPlayer())) {   // named types: Cavern of Souls, Multiversal Passage (2026-10-25)
+                Game g = getPlayer().getGame();
+                forge.game.card.Card h = sa == null ? null : sa.getHostCard();
+                ControlBrain.trace.append("@").append(g.getGameLog().getAllEntries().size()).append(" ").append(LandfallBrain.deckTag(getPlayer()))
+                        .append(" T").append(g.getPhaseHandler().getTurn()).append(" CHOOSE: ").append(h == null ? "?" : h.getName())
+                        .append(": ").append(kind).append(" type -> ").append(r).append("\n");
+            }
+            return r;
+        }
+
         boolean payCost0(forge.game.cost.Cost cost, SpellAbility sa, boolean alreadyPaid,
                          forge.util.collect.FCollectionView<Player> allPayers) {
             if (on("crowdno", getPlayer()) && feedsOpponent(cost, sa, getPlayer())) {
