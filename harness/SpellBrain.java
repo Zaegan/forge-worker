@@ -33,6 +33,13 @@ import java.util.List;
  *   Sear or Burst Lightning in our own upkeep or draw step with an empty stack is vetoed when it would leave fewer
  *   untapped sources than a Crab or Sunderflock in hand costs; at the opponent's end step, one of them is cast if
  *   Forge's AI would play it there (its own target and X).
+ * spellplan6 — Spell Snare discipline (2026-10-25, same report: 102 t4, 106 t8): when the opponent's spell with mana value 2
+ *   is on top of the stack and Spell Snare is castable, Snare it. During the opponent's upkeep, draw step or main 1,
+ *   Forge's Opt, Sleight of Hand or Prismari Charm (surveil mode) is vetoed when it would leave fewer untapped blue sources than a
+ *   counter in hand needs (Snare/Pierce 1, Get Out 2).
+ * spellplan7 — Prismari Charm damage over bounce (same report: 101 T9): when Forge chose the bounce mode on an opponent's
+ *   creature that 1 damage kills, the damage mode is chosen instead: that creature, plus the opponent's best other
+ *   creature 1 damage kills, else the opponent.
  */
 public class SpellBrain {
     static final String SUNDER = "Sunderflock", CRAB = "Eddymurk Crab", OPT = "Opt";
@@ -42,7 +49,11 @@ public class SpellBrain {
     static boolean on3(Player p) { return AiTweaks.on("spellplan3", p); }
     static boolean on4(Player p) { return AiTweaks.on("spellplan4", p); }
     static boolean on5(Player p) { return AiTweaks.on("spellplan5", p); }
-    static boolean any(Player p) { return on1(p) || on2(p) || on3(p) || on4(p) || on5(p); }
+    static boolean on6(Player p) { return AiTweaks.on("spellplan6", p); }
+    static boolean on7(Player p) { return AiTweaks.on("spellplan7", p); }
+    static boolean any(Player p) { return on1(p) || on2(p) || on3(p) || on4(p) || on5(p) || on6(p) || on7(p); }
+    static final String SNARE = "Spell Snare", CHARM = "Prismari Charm";
+    static final java.util.Set<String> CANTRIPS = java.util.Set.of("Opt", "Sleight of Hand");
     static final java.util.Set<String> REMOVAL = java.util.Set.of("Traumatic Critique", "Sear", "Burst Lightning");
 
     /** worst-case unblocked damage of an all-out attack: each untapped opponent creature not in TAPPED blocks one of
@@ -123,6 +134,7 @@ public class SpellBrain {
     static SpellAbility choose(Player me) {
         if (!any(me)) return null;
         Game g = me.getGame();
+        if (on6(me) && !g.getStack().isEmpty()) return snare(me);
         if (!g.getStack().isEmpty()) return null;
         Player op = ProwessBrain.opponent(me);
         if (op == null) return null;
@@ -174,6 +186,77 @@ public class SpellBrain {
         return null;
     }
 
+    /** spellplan6: Spell Snare on the opponent's mana-value-2 spell on top of the stack */
+    static SpellAbility snare(Player me) {
+        SpellAbility top = me.getGame().getStack().peekAbility();
+        if (top == null || !top.isSpell() || top.getActivatingPlayer() == me || top.getHostCard() == null
+                || top.getHostCard().getCMC() != 2) return null;
+        for (SpellAbility sa : LandfallBrain.castable(me, ZoneType.Hand, SNARE)) {
+            sa.resetTargets();
+            if (!sa.canTarget(top)) continue;
+            sa.getTargets().add(top);
+            ControlBrain.count("spellplan6_snare");
+            return sa;
+        }
+        return null;
+    }
+
+    static boolean charmDraws(SpellAbility pick) {
+        if (pick.getChosenList() == null) return false;
+        for (SpellAbility m : pick.getChosenList()) if (m.getApi() == forge.game.ability.ApiType.Surveil) return true;
+        return false;
+    }
+
+    /** blue sources a counter in hand needs (0: none in hand) */
+    static int counterNeed(Player me) {
+        int need = 0;
+        for (Card c : me.getCardsIn(ZoneType.Hand)) {
+            String n = c.getName();
+            if (n.equals(SNARE) || n.equals("Spell Pierce")) need = 1;
+            else if (n.equals("Get Out") && need == 0) need = 2;
+        }
+        return need;
+    }
+
+    /** spellplan7: Forge's bounce mode on a creature 1 damage kills becomes the damage mode */
+    static void charmDamage(Player me, SpellAbility pick) {
+        Player op = ProwessBrain.opponent(me);
+        List<forge.game.spellability.AbilitySub> chosen = pick.getChosenList();
+        if (op == null || chosen == null) return;
+        Card victim = null;
+        List<SpellAbility> modes = new ArrayList<>(chosen);
+        for (SpellAbility s = pick.getSubAbility(); s != null; s = s.getSubAbility()) modes.add(s);
+        for (SpellAbility m : modes)
+            if (m.getApi() == forge.game.ability.ApiType.ChangeZone && m.getTargets() != null)
+                for (Card t : m.getTargets().getTargetCards())
+                    if (t.isCreature() && t.getController() == op && t.getNetToughness() - t.getDamage() <= 1) victim = t;
+        if (victim == null) return;
+        forge.game.spellability.AbilitySub dmg = null;
+        for (forge.game.spellability.AbilitySub m : forge.game.ability.effects.CharmEffect.makePossibleOptions(pick))
+            if (m.getApi() == forge.game.ability.ApiType.DealDamage) dmg = m;
+        if (dmg == null) return;
+        dmg.setActivatingPlayer(me);
+        dmg.resetTargets();
+        if (!dmg.canTarget(victim)) return;
+        dmg.getTargets().add(victim);
+        Card second = null;
+        for (Card c : op.getCreaturesInPlay())
+            if (c != victim && c.getNetToughness() - c.getDamage() <= 1 && dmg.canTarget(c)
+                    && (second == null || ControlBrain.value(c) > ControlBrain.value(second))) second = c;
+        if (second != null) dmg.getTargets().add(second);
+        else if (dmg.canTarget(op)) dmg.getTargets().add(op);
+        pick.setSubAbility(null);
+        List<forge.game.spellability.AbilitySub> one = new ArrayList<>(List.of(dmg));   // chainAbilities sorts it
+        pick.setChosenList(one);
+        forge.game.ability.effects.CharmEffect.chainAbilities(pick, new ArrayList<>(one));
+        SpellAbility sub = pick.getSubAbility();
+        if (sub != null && sub.getApi() == forge.game.ability.ApiType.DealDamage && (sub.getTargets() == null || sub.getTargets().isEmpty())) {
+            sub.resetTargets();
+            for (Object o : dmg.getTargets()) sub.getTargets().add((forge.game.GameObject) o);
+        }
+        ControlBrain.count("spellplan7_charm_damage");
+    }
+
     static int blueSources(Player me) {
         int n = 0;
         for (Card c : me.getCardsIn(ZoneType.Battlefield))
@@ -215,6 +298,13 @@ public class SpellBrain {
                 ControlBrain.count("spellplan5_removal_held"); return null;
             }
         }
+        if (on6(me) && !ours && (CANTRIPS.contains(h.getName()) || h.getName().equals(CHARM) && charmDraws(pick))
+                && (ph == PhaseType.UPKEEP || ph == PhaseType.DRAW || ph == PhaseType.MAIN1)) {
+            int need = counterNeed(me);
+            if (need > 0 && blueSources(me) - 1 < need) { ControlBrain.count("spellplan6_cantrip_keeps_counter_mana"); return null; }
+        }
+        if (on7(me) && h.getName().equals(CHARM))
+            try { charmDamage(me, pick); } catch (RuntimeException e) { ControlBrain.count("spellplan7_error_" + e.getClass().getSimpleName()); }
         if (on3(me) && LandfallBrain.named(h, OPT)) {
             boolean badStep = ph == PhaseType.UPKEEP || ph == PhaseType.DRAW || (!ours && ph == PhaseType.MAIN1);
             boolean lastBlue = !ours && counterInHand(me) && blueSources(me) <= 1;

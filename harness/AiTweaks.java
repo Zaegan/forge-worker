@@ -58,8 +58,9 @@ import java.util.List;
  * exact optimal strategy for the 10-criteria hand score, goldfish/mull_opt.py).
  *
  * landfall — LandfallBrain's Escape Tunnel + Mightform Harmonizer kill for Mono-Green Landfall.
- * spellplan1/2/3/4/5@NAME — SpellBrain (Izzet Spellementals): Sunderflock before combat / Eddymurk Crab on the opponent's turn /
- *  Opt at the opponent's end step / Crab for lethal, then attack with everything / removal at the opponent's end step.
+ * spellplan1..7@NAME — SpellBrain (Izzet Spellementals): Sunderflock before combat / Eddymurk Crab on the opponent's turn /
+ *  Opt at the opponent's end step / Crab for lethal, then attack with everything / removal at the opponent's end step /
+ *  Spell Snare discipline / Prismari Charm damage over bounce.
  * fetchplay@NAME — FetchBrain: Zendikar fetchlands held and cracked only for a reason (Bloodghast, landfall attacker,
  *  mana, Searing Blaze on the opponent's turn), else at the opponent's end step.
  * spelltrace@NAME — LandfallBrain.trace2: snapshots at every decision, our main-phase passes and passes on opponent spells (any deck).
