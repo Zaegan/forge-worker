@@ -54,11 +54,29 @@ public class ProwessBrain {
      *                           creature can block it
      *   prowessdefend@NAME  P5  opponent's declare-blockers step: if the unblocked attackers would kill us, remove one
      *                           with Unsummon or Burst Lightning (kicked or not, several if needed) so we survive
-     * P3 is prowessplan2 (below). */
+     * P3 is prowessplan2 (below).
+     * Damage turns (2026-10-26, user: Forge cannot grasp the plan or set up an attack for maximum damage; adapted from
+     * LeylineBrain's leyplan/leylinespend). Each acts only on a turn with no lethal line:
+     *   prowesscombat@NAME   P9  after blocks on our attack: an unblocked attacker that grows per spell (prowess,
+     *                            Slickshot) gets our held instant cantrips now, from surplus mana, instead of at their end
+     *                            step (the same card, plus damage)
+     *   prowessprecombat@NAME P10 main 1: an attacker no untapped opposing creature can block, that grows per spell,
+     *                            gets our sorcery cantrips (Sleight of Hand, Flow State) and Wild Ride before combat, from
+     *                            surplus mana; it is made to attack
+     *   prowesswall@NAME     P11 the opponent's end step: Burst Lightning kills the one untapped creature that could block
+     *                            our best per-spell attacker; and after blocks on our attack, Burst kills the lone blocker
+     *                            of a per-spell attacker
+     *   prowessattack@NAME   P12 main 1: every per-spell attacker that no untapped opposing creature can block attacks,
+     *                            unless the opponent's board could kill us next turn
+     * Surplus mana = untapped lands less the mana value of the cheapest creature card in hand (cast that first). */
     static boolean P1(Player me) { return V3(me) || AiTweaks.on("prowessstoke", me); }
     static boolean P2(Player me) { return V3(me) || AiTweaks.on("prowesscantrip", me); }
     static boolean P4(Player me) { return AiTweaks.on("prowesshaste", me); }
     static boolean P5(Player me) { return AiTweaks.on("prowessdefend", me); }
+    static boolean P9(Player me) { return AiTweaks.on("prowesscombat", me); }
+    static boolean P10(Player me) { return AiTweaks.on("prowessprecombat", me); }
+    static boolean P11(Player me) { return AiTweaks.on("prowesswall", me); }
+    static boolean P12(Player me) { return AiTweaks.on("prowessattack", me); }
 
     /** the spell (as chosen) draws, digs, scries or surveils */
     static boolean cantrip(SpellAbility sa) {
@@ -313,11 +331,29 @@ public class ProwessBrain {
         PhaseType ph = g.getPhaseHandler().getPhase();
         if (!g.getPhaseHandler().isPlayerTurn(me)) {
             if (ph == PhaseType.COMBAT_DECLARE_BLOCKERS && P5(me)) return guard("prowessdefend", () -> defend(me, op));
+            if (ph == PhaseType.END_OF_TURN && P11(me)) {
+                SpellAbility w = guard("prowesswall", () -> wallEot(me, op));
+                if (w != null) return w;
+            }
             return ph == PhaseType.END_OF_TURN ? endStep(me) : null;
+        }
+        if (ph == PhaseType.COMBAT_DECLARE_BLOCKERS && (P9(me) || P11(me))) {
+            if (P11(me)) {
+                SpellAbility w = guard("prowesswall", () -> wallCombat(me));
+                if (w != null) return w;
+            }
+            return P9(me) ? guard("prowesscombat", () -> combatPump(me)) : null;
         }
         if (ph != PhaseType.MAIN1) return null;
         Line l = lethal(me, op);
-        if (l == null) return P4(me) ? guard("prowesshaste", () -> haste(me, op)) : null;
+        if (l == null) {
+            if (P12(me)) guard("prowessattack", () -> { evasiveAttack(me, op); return null; });
+            if (P10(me)) {
+                SpellAbility pc = guard("prowessprecombat", () -> precombat(me, op));
+                if (pc != null) return pc;
+            }
+            return P4(me) ? guard("prowesshaste", () -> haste(me, op)) : null;
+        }
         // the attack happens: every creature that can attack does
         if (plannedGame != g || plannedTurn != g.getPhaseHandler().getTurn()) planned.clear();
         plannedGame = g; plannedTurn = g.getPhaseHandler().getTurn();
@@ -352,6 +388,128 @@ public class ProwessBrain {
         }
         ControlBrain.count("prowessplan_lethal_attack");
         return null;   // lethal on board: attack (forceAttack)
+    }
+
+    /* ---------------- damage turns (P9-P12) ---------------- */
+
+    /** untapped lands less the mana value of the cheapest creature card in hand we could cast (0 reserve if none) */
+    static int surplus(Player me) {
+        int mana = mana(me), reserve = Integer.MAX_VALUE;
+        for (Card c : me.getCardsIn(ZoneType.Hand)) if (c.isCreature()) reserve = Math.min(reserve, (int) c.getCMC());
+        if (reserve == Integer.MAX_VALUE || reserve > mana) reserve = 0;
+        return mana - reserve;
+    }
+
+    /** no untapped creature of OP can block A as it is now */
+    static boolean free(Card a, Player op) {
+        for (Card b : op.getCreaturesInPlay()) if (b.isUntapped() && canBlock(a, a.getNetPower(), b)) return false;
+        return true;
+    }
+
+    /** our castable spells of hand cards matching P (instants/sorceries only), cost at most MANA */
+    static List<SpellAbility> castable(Player me, java.util.function.Predicate<Card> p, int mana) {
+        CardCollection hand = new CardCollection();
+        for (Card c : me.getCardsIn(ZoneType.Hand)) if ((c.isInstant() || c.isSorcery()) && !c.isCreature() && p.test(c)) hand.add(c);
+        List<SpellAbility> out = new ArrayList<>();
+        for (SpellAbility sa : ComputerUtilAbility.getSpellAbilities(hand, me)) {
+            if (!sa.isSpell() || sa.isAdventure() || sa.getHostCard().getCMC() > mana) continue;
+            if (playable(me, sa) != null) out.add(sa);
+        }
+        return out;
+    }
+
+    /** the best per-spell creature in LIST (most power per spell, then most power) */
+    static Card bestGrower(List<Card> list) {
+        Card best = null;
+        for (Card c : list)
+            if (perSpell(c) > 0 && (best == null || perSpell(c) > perSpell(best)
+                    || perSpell(c) == perSpell(best) && c.getNetPower() > best.getNetPower())) best = c;
+        return best;
+    }
+
+    /** P9: after blocks, a held instant cantrip for an unblocked per-spell attacker */
+    static SpellAbility combatPump(Player me) {
+        Combat cb = me.getGame().getCombat();
+        if (cb == null) return null;
+        List<Card> open = new ArrayList<>();
+        for (Card a : cb.getAttackers()) if (a.getController() == me && cb.isUnblocked(a)) open.add(a);
+        if (bestGrower(open) == null) return null;
+        for (SpellAbility sa : castable(me, c -> c.isInstant(), surplus(me)))
+            if (held(me, sa)) { ControlBrain.count("prowesscombat_cantrip"); return sa; }
+        return null;
+    }
+
+    /** P10: main 1, sorcery cantrips and Wild Ride for a free per-spell attacker */
+    static SpellAbility precombat(Player me, Player op) {
+        List<Card> free = new ArrayList<>();
+        for (Card c : me.getCreaturesInPlay()) if (canAttackNow(c) && free(c, op)) free.add(c);
+        Card t = bestGrower(free);
+        if (t == null) return null;
+        for (SpellAbility sa : castable(me, c -> c.isSorcery(), surplus(me))) {
+            boolean ride = sa.getHostCard().getName().equals(WILDRIDE);
+            if (!ride && (AiTweaks.targets(sa) || !cantrip(sa))) continue;
+            if (ride) {
+                if (!sa.canTarget(t)) continue;
+                sa.resetTargets(); sa.getTargets().add(t);
+            }
+            plan(me, t);
+            ControlBrain.count(ride ? "prowessprecombat_ride" : "prowessprecombat_cantrip");
+            return sa;
+        }
+        return null;
+    }
+
+    static void plan(Player me, Card c) {
+        Game g = me.getGame();
+        if (plannedGame != g || plannedTurn != g.getPhaseHandler().getTurn()) planned.clear();
+        plannedGame = g; plannedTurn = g.getPhaseHandler().getTurn();
+        planned.add(c);
+    }
+
+    /** P12: free per-spell attackers attack, unless the opponent's board could kill us next turn */
+    static void evasiveAttack(Player me, Player op) {
+        long p = 0;
+        for (Card c : op.getCreaturesInPlay()) p += Math.max(0, c.getNetPower());
+        if (p >= me.getLife()) return;
+        for (Card c : me.getCreaturesInPlay())
+            if (canAttackNow(c) && perSpell(c) > 0 && free(c, op) && !planned.contains(c)) {
+                plan(me, c);
+                ControlBrain.count("prowessattack_planned");
+            }
+    }
+
+    /** an unkicked Burst Lightning of ours that can target C and kills it (null if none) */
+    static SpellAbility burstOn(Player me, Card c) {
+        if (c.getNetToughness() - c.getDamage() > 2) return null;
+        for (SpellAbility sa : castable(me, x -> x.getName().equals(BURST), mana(me)))
+            if (sa.canTarget(c)) { sa.resetTargets(); sa.getTargets().add(c); return sa; }
+        return null;
+    }
+
+    /** P11 (end step): Burst the one untapped creature that alone keeps our best per-spell creature from attacking free */
+    static SpellAbility wallEot(Player me, Player op) {
+        Card t = bestGrower(me.getCreaturesInPlay());
+        if (t == null) return null;
+        List<Card> walls = new ArrayList<>();
+        for (Card b : op.getCreaturesInPlay()) if (b.isUntapped() && canBlock(t, t.getNetPower(), b)) walls.add(b);   // tapped attackers stay tapped through our turn
+        if (walls.size() != 1) return null;
+        SpellAbility sa = burstOn(me, walls.get(0));
+        if (sa != null) ControlBrain.count("prowesswall_eot");
+        return sa;
+    }
+
+    /** P11 (after blocks): Burst the lone blocker of a per-spell attacker of ours */
+    static SpellAbility wallCombat(Player me) {
+        Combat cb = me.getGame().getCombat();
+        if (cb == null) return null;
+        for (Card a : cb.getAttackers()) {
+            if (a.getController() != me || perSpell(a) <= 0 || !cb.isBlocked(a)) continue;
+            List<Card> bs = cb.getBlockers(a);
+            if (bs.size() != 1) continue;
+            SpellAbility sa = burstOn(me, bs.get(0));
+            if (sa != null) { ControlBrain.count("prowesswall_blocker"); return sa; }
+        }
+        return null;
     }
 
     /** a new rule's error is counted (RULE_error_TYPE) and the decision left to Forge, never a crashed game */
