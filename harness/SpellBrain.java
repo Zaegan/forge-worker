@@ -64,6 +64,17 @@ import java.util.List;
  *   their turns). The kill opens our attack when it is our turn before blocks and the target is an untapped creature
  *   that could block one of our creatures able to attack. Creature values cannot draw this line: Forge rates a 0/1
  *   Chocobo (126) below Llanowar Elves (151) and an earthbent Forest (181) near Harmonizer (231).
+ * spellkeepup / spellkeepup2 — S12 (2026-10-26, user: try a counter-timing rule vs Landfall, "but I'm not optimistic";
+ *   sl-s10: Landfall's Harmonizer and Ascension resolved into our tapped-out turns, and when Get Out was up it countered
+ *   them): keep the counter mana up, only against an opponent that has shown creatures (public information: a creature on
+ *   its battlefield or a creature card in its graveyard or exile; spellplan6v's veto without that test hurt vs 4c,
+ *   z -2.26, whose threats are mostly not creatures).
+ *   spellkeepup  S12a  the opponent's upkeep, draw step or main 1: Forge's Opt, Sleight of Hand or Prismari Charm
+ *                      (surveil) is vetoed when it would leave fewer untapped blue sources than a counter in hand needs
+ *                      (spellplan6v's veto, gated)
+ *   spellkeepup2 S12b  our own main phases, empty stack, the opponent has 2+ cards in hand: Forge's spell (not a counter,
+ *                      not Sunderflock) is vetoed when it would leave fewer blue sources than a counter in hand needs;
+ *                      the mana is then spent at their end step (Forge's instants, Crab by spellplan2)
  * (S9, spellshock, Steam Vents' 2 life, is in MetaBrain.payShrine.)
  * spellplan7 — Prismari Charm damage over bounce (same report: 101 T9): when Forge chose the bounce mode on an opponent's
  *   creature that 1 damage kills, the damage mode is chosen instead: that creature, plus the opponent's best other
@@ -96,7 +107,9 @@ public class SpellBrain {
     static boolean onStoke(Player p) { return AiTweaks.on("spellstoke", p); }
     static boolean onRemoval(Player p) { return AiTweaks.on("spellremoval", p); }
     static boolean onHold(Player p) { return AiTweaks.on("spellhold", p); }
-    static boolean any(Player p) { return on1(p) || on2(p) || on3(p) || on4(p) || on5(p) || on6(p) || on7(p) || on6t(p) || on6v(p) || onStoke(p) || onRemoval(p) || onHold(p); }
+    static boolean onKeep(Player p) { return AiTweaks.on("spellkeepup", p); }
+    static boolean onKeep2(Player p) { return AiTweaks.on("spellkeepup2", p); }
+    static boolean any(Player p) { return on1(p) || on2(p) || on3(p) || on4(p) || on5(p) || on6(p) || on7(p) || on6t(p) || on6v(p) || onStoke(p) || onRemoval(p) || onHold(p) || onKeep(p) || onKeep2(p); }
     static final String SNARE = "Spell Snare", CHARM = "Prismari Charm";
     static final java.util.Set<String> CANTRIPS = java.util.Set.of("Opt", "Sleight of Hand");
     static final java.util.Set<String> REMOVAL = java.util.Set.of("Traumatic Critique", "Sear", "Burst Lightning");
@@ -423,6 +436,16 @@ public class SpellBrain {
         return false;
     }
 
+    /** S12: the opponent has shown creatures (public: on its battlefield, in its graveyard or exile) */
+    static boolean showsCreatures(Player op) {
+        if (!op.getCreaturesInPlay().isEmpty()) return true;
+        for (Card c : op.getCardsIn(ZoneType.Graveyard)) if (c.isCreature()) return true;
+        for (Card c : op.getCardsIn(ZoneType.Exile)) if (c.isCreature()) return true;
+        return false;
+    }
+
+    static final java.util.Set<String> COUNTERS = java.util.Set.of("Spell Snare", "Spell Pierce", "Get Out");
+
     static final java.util.Set<String> HOLD = java.util.Set.of("Burst Lightning", "Sear", "Impractical Joke", "Traumatic Critique");
 
     static List<SpellAbility> post(Player me, List<SpellAbility> ai) {
@@ -484,6 +507,19 @@ public class SpellBrain {
                 && (ph == PhaseType.UPKEEP || ph == PhaseType.DRAW || ph == PhaseType.MAIN1)) {
             int need = counterNeed(me);
             if (need > 0 && blueSources(me) - 1 < need) { ControlBrain.count("spellplan6_cantrip_keeps_counter_mana"); return null; }
+        }
+        if (onKeep(me) && op != null && !ours && (CANTRIPS.contains(h.getName()) || h.getName().equals(CHARM) && charmDraws(pick))
+                && (ph == PhaseType.UPKEEP || ph == PhaseType.DRAW || ph == PhaseType.MAIN1) && showsCreatures(op)) {
+            int need = counterNeed(me);
+            if (need > 0 && blueSources(me) - 1 < need) { ControlBrain.count("spellkeepup_cantrip_held"); return null; }
+        }
+        if (onKeep2(me) && op != null && ours && g.getStack().isEmpty() && (ph == PhaseType.MAIN1 || ph == PhaseType.MAIN2)
+                && !COUNTERS.contains(h.getName()) && !LandfallBrain.named(h, SUNDER)
+                && op.getCardsIn(ZoneType.Hand).size() >= 2 && showsCreatures(op)) {
+            int need = counterNeed(me);
+            int cost = pick.getPayCosts() == null || pick.getPayCosts().getTotalMana() == null ? 0 : pick.getPayCosts().getTotalMana().getCMC();
+            int left = Math.min(blueSources(me), LandfallBrain.untappedSources(me) - cost);
+            if (need > 0 && cost > 0 && left < need) { ControlBrain.count("spellkeepup2_held"); return null; }
         }
         if (on7(me) && h.getName().equals(CHARM))
             try { charmDamage(me, pick); } catch (RuntimeException e) { ControlBrain.count("spellplan7_error_" + e.getClass().getSimpleName()); }
