@@ -43,6 +43,9 @@ import java.util.List;
  *   surveil (Consult the Star Charts, also by flashback; Esper Origins from hand) is let through; a creature or planeswalker
  *   spell, or a transforming card cast from a graveyard (Esper Origins becomes a creature), is always fair game. 6v = the cantrip veto half alone.
  *   Pooled = both switches on.
+ * spellstoke — S2 (2026-10-26, scans pz-s10, sp12-s10b, bz-s10: Stoke Genius was Spellementals' biggest leak, 7 of 10
+ *   games vs Dragons): no "discard your hand, then draw" spell (Stoke Genius, Hearth Elemental's adventure) that throws
+ *   away 3+ other cards for its 2 -- Prowess's confirmed prowessstoke (P1) for this deck.
  * spellplan7 — Prismari Charm damage over bounce (same report: 101 T9): when Forge chose the bounce mode on an opponent's
  *   creature that 1 damage kills, the damage mode is chosen instead: that creature, plus the opponent's best other
  *   creature 1 damage kills, else the opponent.
@@ -71,7 +74,8 @@ public class SpellBrain {
         return a == forge.game.ability.ApiType.Draw || a == forge.game.ability.ApiType.Dig
                 || a == forge.game.ability.ApiType.Scry || a == forge.game.ability.ApiType.Surveil;
     }
-    static boolean any(Player p) { return on1(p) || on2(p) || on3(p) || on4(p) || on5(p) || on6(p) || on7(p) || on6t(p) || on6v(p); }
+    static boolean onStoke(Player p) { return AiTweaks.on("spellstoke", p); }
+    static boolean any(Player p) { return on1(p) || on2(p) || on3(p) || on4(p) || on5(p) || on6(p) || on7(p) || on6t(p) || on6v(p) || onStoke(p); }
     static final String SNARE = "Spell Snare", CHARM = "Prismari Charm";
     static final java.util.Set<String> CANTRIPS = java.util.Set.of("Opt", "Sleight of Hand");
     static final java.util.Set<String> REMOVAL = java.util.Set.of("Traumatic Critique", "Sear", "Burst Lightning");
@@ -302,6 +306,11 @@ public class SpellBrain {
         PhaseType ph = g.getPhaseHandler().getPhase();
         boolean ours = g.getPhaseHandler().isPlayerTurn(me);
         Player op = ProwessBrain.opponent(me);
+        if (onStoke(me) && pick.getApi() == forge.game.ability.ApiType.Discard && "Hand".equals(pick.getParam("Mode"))) {
+            int other = 0;
+            for (Card c : me.getCardsIn(ZoneType.Hand)) if (c != h) other++;
+            if (other >= 3) { ControlBrain.count("spellstoke_no_hand_dump"); return null; }
+        }
         if (on2(me) && ours && LandfallBrain.named(h, CRAB) && op != null) {
             boolean oppUntapped = false;
             for (Card c : op.getCreaturesInPlay()) if (c.isUntapped()) oppUntapped = true;
