@@ -78,6 +78,14 @@ public class ProwessBrain {
     static boolean P10(Player me) { return AiTweaks.on("prowessprecombat", me); }
     static boolean P11(Player me) { return AiTweaks.on("prowesswall", me); }
     static boolean P12(Player me) { return AiTweaks.on("prowessattack", me); }
+    /** P15 prowessnoblock@NAME (user, 2026-10-26: "prowess probably isn't supposed to be defending ... even if you have a
+     *  blocker available, using it, even to defend an attacker with 10 power, may not be correct"; "it would be safe to
+     *  also block if it preserves an elusive attacker and sufficient life for lands that we have in play that we need to
+     *  pay life to get the mana we need, or obviously if it's lethal"): after Forge declares our blocks, take back every
+     *  block that is not needed to end combat above the life our lands need (1 per Great Hall of the Biblioplex in play;
+     *  0 without one: only lethal). Evasive creatures (flying, Elusive Otter) are taken off blocks first, then the most
+     *  valuable; the blocks that remain use our cheapest creatures. */
+    static boolean P15(Player me) { return AiTweaks.on("prowessnoblock", me); }
 
     /** the spell (as chosen) draws, digs, scries or surveils */
     static boolean cantrip(SpellAbility sa) {
@@ -664,5 +672,37 @@ public class ProwessBrain {
                 combat.addAttacker(c, op);
                 ControlBrain.count("prowessplan_forced_attacker");
             }
+    }
+
+    /** P15: the life our lands in play cost to tap for one turn's mana */
+    static int lifeForLands(Player me) {
+        int r = 0;
+        for (Card c : me.getCardsIn(ZoneType.Battlefield)) if (c.getName().equals("Great Hall of the Biblioplex")) r += 1;
+        return r;
+    }
+
+    static boolean evasive(Card c) { return c.hasKeyword(Keyword.FLYING) || c.getName().equals("Elusive Otter"); }
+
+    /** P15: take back the blocks we do not need to stay above lifeForLands */
+    static void noBlock(Player me, Combat combat) {
+        List<Card> bl = new ArrayList<>(combat.getAllBlockers());
+        bl.removeIf(b -> b.getController() != me);
+        if (bl.isEmpty()) return;
+        int floor = lifeForLands(me);
+        bl.sort((x, y) -> {
+            if (evasive(x) != evasive(y)) return evasive(x) ? -1 : 1;
+            return Integer.compare(forge.ai.ComputerUtilCard.evaluateCreature(y), forge.ai.ComputerUtilCard.evaluateCreature(x));
+        });
+        for (Card b : bl) {
+            List<Card> from = new ArrayList<>(combat.getAttackersBlockedBy(b));
+            for (Card a : from) combat.removeBlockAssignment(a, b);
+            boolean ok;
+            try { ok = forge.ai.ComputerUtilCombat.lifeThatWouldRemain(me, combat) > floor; } catch (Exception e) { ok = false; }
+            if (ok) ControlBrain.count("prowessnoblock_unblocked");
+            else {
+                for (Card a : from) combat.addBlocker(a, b);
+                ControlBrain.count(floor > 0 ? "prowessnoblock_kept_lands" : "prowessnoblock_kept_lethal");
+            }
+        }
     }
 }

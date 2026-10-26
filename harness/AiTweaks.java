@@ -436,6 +436,7 @@ public class AiTweaks {
             if (on("landseq9", getPlayer()) || on("landseq10", getPlayer()) || on("landseq11", getPlayer()) || on("landseq12", getPlayer())
                     || on("landseq13", getPlayer()) || on("landseq14", getPlayer()) || on("landseq15", getPlayer())
                     || on("landseq16", getPlayer())) LandfallBrain.fixBlocks(getPlayer(), combat);
+            if (ProwessBrain.P15(getPlayer())) ProwessBrain.noBlock(getPlayer(), combat);
             if (on("lftrace", getPlayer()) || on("spelltrace", getPlayer())) LandfallBrain.traceCombat(getPlayer(), "BLOCK", combat);
         }
 
