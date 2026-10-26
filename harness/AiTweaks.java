@@ -54,6 +54,7 @@ import java.util.List;
  *   Landfall F1, F2 (LandfallBrain).
  * azoriushold / dimirbetrayal / dimirlethal @NAME — stock meta decks' hypotheses A1, D1, D2 (MetaBrain).
  * dragonmomo / dragonpassage / dragontutor / dragonnova @NAME — Boros Dragons B1-B4 (MetaBrain).
+ * landorder@NAME — A6, any deck: a tapped land first when the untapped land's mana would go unused (LandOrder).
  * prowessstoke / prowesscantrip / prowesshaste / prowessdefend @NAME — Prowess hypotheses P1, P2, P4, P5, one switch each
  *   (add-ons to prowessplan; ProwessBrain). prowessplan2 is P3.
  * prowessplan3@NAME — prowessplan + held cantrips must draw/dig (not Secret Identity) + no Stoke Genius discarding 3+ cards.
@@ -296,6 +297,10 @@ public class AiTweaks {
             if (on("control", getPlayer())) {   // "control@NAME" (2026-10-25): ControlBrain for one deck only
                 if (ControlBrain.holdUntilMain(getPlayer())) { src = "control-hold"; return null; }
                 SpellAbility mine = ControlBrain.choose(getAi(), getPlayer());
+                if (mine != null && LandOrder.on(getPlayer())) {   // control's own land drop goes through land order too
+                    List<SpellAbility> lo = LandOrder.post(getPlayer(), List.of(mine));
+                    if (lo != null && !lo.isEmpty() && lo.get(0) != mine) return by("landorder", lo.get(0));
+                }
                 if (mine != null) return by("control", mine);
                 List<SpellAbility> ai = aiChoose();
                 if (ai != null && ai.stream().anyMatch(ControlBrain::vetoed)) {
@@ -305,6 +310,7 @@ public class AiTweaks {
                 }
                 ai = has("leyline") ? LeylineBrain.post(getPlayer(), ai) : ai;
                 ai = ProwessBrain.ON(getPlayer()) ? ProwessBrain.post(getPlayer(), ai) : ai;
+                ai = post("landorder", ai, LandOrder.on(getPlayer()) ? LandOrder.post(getPlayer(), ai) : ai);
                 return spendIfIdle(getPlayer(), ai);
             }
             List<SpellAbility> ai = aiChoose();
@@ -312,6 +318,7 @@ public class AiTweaks {
             ai = post("prowessplan", ai, ProwessBrain.ON(getPlayer()) ? ProwessBrain.post(getPlayer(), ai) : ai);
             ai = post("spellplan", ai, SpellBrain.any(getPlayer()) ? SpellBrain.post(getPlayer(), ai) : ai);
             ai = post("metaplan", ai, MetaBrain.any(getPlayer()) ? MetaBrain.post(getPlayer(), ai) : ai);
+            ai = post("landorder", ai, LandOrder.on(getPlayer()) ? LandOrder.post(getPlayer(), ai) : ai);
             ai = post("landseq", ai, on("landseq", getPlayer()) ? LandfallBrain.seq(getPlayer(), ai) : ai);
             ai = post("landseq", ai, LandfallBrain.seqOn(getPlayer()) ? LandfallBrain.seq2(getPlayer(), ai) : ai);
             ai = post("landtunnel", ai, LandfallBrain.f1(getPlayer()) ? LandfallBrain.tunnelFirst(getPlayer(), ai) : ai);
