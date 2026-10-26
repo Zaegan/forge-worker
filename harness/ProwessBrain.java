@@ -83,9 +83,10 @@ public class ProwessBrain {
      *  also block if it preserves an elusive attacker and sufficient life for lands that we have in play that we need to
      *  pay life to get the mana we need, or obviously if it's lethal"): after Forge declares our blocks, take back every
      *  block that is not needed to end combat above the life our lands need (1 per Great Hall of the Biblioplex in play;
-     *  0 without one: only lethal). A block kept only for that life must not cost us our last creature the opponent
-     *  cannot block next turn (user: "the blocking scheme does not cause us to no longer have a creature left in play
-     *  that we do not think our opponent will be able to block"). Creatures they cannot block are taken off blocks
+     *  0 without one: only lethal). A block kept only for that life must not leave us without an attacker that gets
+     *  through next turn (user: "the blocking scheme does not cause us to no longer have a creature left in play that we
+     *  do not think our opponent will be able to block"; elusiveLeft: unblockable, flying, or more attackers than their
+     *  blockers can cover). Creatures they cannot block are taken off blocks
      *  first, then the most valuable; the blocks that remain use our cheapest creatures. */
     static boolean P15(Player me) { return AiTweaks.on("prowessnoblock", me); }
 
@@ -683,8 +684,13 @@ public class ProwessBrain {
         return r;
     }
 
-    /** P15: after this combat, do we keep a creature the opponent cannot block on our next turn? Their blockers then
-     *  are the creatures untapped now that are not attacking (or have vigilance) and survive combat. */
+    /** P15: after this combat, will one of our attackers get through on our next turn whatever the opponent blocks?
+     *  (user, 2026-10-26: "elusive otter may not be blockable, and a creature with flying may not be blockable, and if
+     *  we have more attackers than blockers, there exists one that will not be blocked. all of those board states
+     *  contribute to elusiveness.") Their blockers then are the creatures untapped now that are not attacking (or have
+     *  vigilance) and survive combat; ours are the creatures that survive combat and can attack. One gets through when
+     *  the blockers cannot cover every attacker: a maximum matching of blockers to attackers they can block is smaller
+     *  than our attackers (an unblockable creature has no blocker at all). */
     static boolean elusiveLeft(Player me, Combat combat) {
         Player op = combat.getAttackingPlayer();
         List<Card> theirs = new ArrayList<>();
@@ -694,18 +700,35 @@ public class ProwessBrain {
             catch (Exception e) { }
             theirs.add(o);
         }
+        List<Card> ours = new ArrayList<>();
         for (Card c : me.getCreaturesInPlay()) {
+            if (c.hasKeyword(Keyword.DEFENDER)) continue;
             try { if (combat.isBlocking(c) && forge.ai.ComputerUtilCombat.combatantWouldBeDestroyed(me, c, combat)) continue; }
             catch (Exception e) { continue; }
-            boolean free = true;
-            for (Card o : theirs) if (canBlock(c, c.getNetPower(), o)) { free = false; break; }
-            if (free) return true;
+            ours.add(c);
+        }
+        if (ours.isEmpty()) return false;
+        boolean[][] can = new boolean[ours.size()][theirs.size()];
+        for (int i = 0; i < ours.size(); i++)
+            for (int j = 0; j < theirs.size(); j++) can[i][j] = canBlock(ours.get(i), ours.get(i).getNetPower(), theirs.get(j));
+        int[] by = new int[theirs.size()];   // attacker each blocker is matched to, -1 none
+        java.util.Arrays.fill(by, -1);
+        int matched = 0;
+        for (int i = 0; i < ours.size(); i++) if (augment(i, can, by, new boolean[theirs.size()])) matched++;
+        return matched < ours.size();
+    }
+
+    static boolean augment(int i, boolean[][] can, int[] by, boolean[] seen) {
+        for (int j = 0; j < by.length; j++) {
+            if (!can[i][j] || seen[j]) continue;
+            seen[j] = true;
+            if (by[j] < 0 || augment(by[j], can, by, seen)) { by[j] = i; return true; }
         }
         return false;
     }
 
     /** P15: take back the blocks not needed to survive above lifeForLands; blocks kept only for that life (not to survive)
-     *  must leave us a creature the opponent cannot block next turn, if we would have one without blocking (user,
+     *  must leave us an attacker that gets through next turn (elusiveLeft), if we would have one without blocking (user,
      *  2026-10-26: "the blocking scheme does not cause us to no longer have a creature left in play that we do not think
      *  our opponent will be able to block") */
     static void noBlock(Player me, Combat combat) {
