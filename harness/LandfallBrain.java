@@ -357,7 +357,7 @@ public class LandfallBrain {
     static final java.util.Map<Integer, List<String>> pool = new java.util.HashMap<>();
 
     /** the mana each traced player spends on each spell or ability (2026-10-25: which colour a dual paid). Forge's AI
-     *  rarely gets priority over its own spell, so the payment is read from the game's events: the colours added to a
+     *  rarely gets priority over its own spell, so the payment is read from the game's events: the colours spent from a
      *  player's pool since their last cast are logged at the cast ("PAID") */
     static void paid(Player me) {
         Game g = me.getGame();
@@ -367,7 +367,10 @@ public class LandfallBrain {
             @com.google.common.eventbus.Subscribe
             public void on(forge.game.event.GameEvent e) {
                 try {
-                    if (e instanceof forge.game.event.GameEventManaPool mp && mp.mode() == forge.game.event.EventValueChangeType.Added) {
+                    // mana SPENT (removed from the pool), not added (2026-10-26, scan sl-s10: "Llanowar Elves paid G,G,G,G"
+                    // collected mana added for other payments); the pool empties between steps, so a step change drops it
+                    if (e instanceof forge.game.event.GameEventTurnPhase) { pool.clear(); return; }
+                    if (e instanceof forge.game.event.GameEventManaPool mp && mp.mode() == forge.game.event.EventValueChangeType.Removed) {
                         List<String> b = pool.computeIfAbsent(mp.player().getId(), k -> new ArrayList<>());
                         for (forge.card.MagicColor.Color c : mp.colors()) b.add(c == null ? "?" : c.name().equals("BLUE") ? "U" : c.name().substring(0, 1));
                     } else if (e instanceof forge.game.event.GameEventSpellAbilityCast sc && sc.si() != null && sc.si().getActivatingPlayer() != null) {

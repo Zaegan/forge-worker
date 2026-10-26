@@ -68,13 +68,15 @@ public class MetaBrain {
         return false;
     }
 
-    /** G1: pay the Shrine's 2 life? null: not ours to decide */
+    /** G1: pay the Shrine's 2 life? null: not ours to decide. S9 (spellshock@NAME, 2026-10-26, scan sl-s10: Spellementals
+     *  declined Steam Vents with no other red source, then sat on castable red cards): the same rule for Steam Vents */
     static Boolean payShrine(forge.game.cost.Cost cost, SpellAbility sa, Player me) {
-        if (!g1(me) || sa == null || sa.getHostCard() == null || !sa.getHostCard().getName().equals(SHRINE)
-                || !cost.toSimpleString().contains("2 life")) return null;
+        if (sa == null || sa.getHostCard() == null || !cost.toSimpleString().contains("2 life")) return null;
+        String n = sa.getHostCard().getName();
+        if (!(g1(me) && n.equals(SHRINE) || AiTweaks.on("spellshock", me) && n.equals("Steam Vents"))) return null;
         boolean ours = me.getGame().getPhaseHandler().isPlayerTurn(me);
         boolean pay = me.getLife() >= 12 || ours && me.getLife() >= 6 && spellFor(me, untapped(me) + 1);
-        ControlBrain.count(pay ? "lifeshock_paid" : "lifeshock_tapped");
+        ControlBrain.count((n.equals(SHRINE) ? "lifeshock" : "spellshock") + (pay ? "_paid" : "_tapped"));
         return pay;
     }
 

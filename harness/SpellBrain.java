@@ -46,6 +46,14 @@ import java.util.List;
  * spellstoke — S2 (2026-10-26, scans pz-s10, sp12-s10b, bz-s10: Stoke Genius was Spellementals' biggest leak, 7 of 10
  *   games vs Dragons): no "discard your hand, then draw" spell (Stoke Genius, Hearth Elemental's adventure) that throws
  *   away 3+ other cards for its 2 -- Prowess's confirmed prowessstoke (P1) for this deck.
+ * spellremoval — S10 (2026-10-26, scan sl-s10: Burst on an earthbent land while Mightform Harmonizer stayed; near-misses in
+ *   4 games of removal on Elves or a token): when Forge's Burst Lightning, Sear or Impractical Joke targets an opponent's
+ *   creature, it goes instead to the opponent's most valuable creature it kills (Forge's own creature evaluation) when
+ *   that is clearly better (20% + 10); an unkicked Burst is kicked when the mana is there and a creature only 4 damage
+ *   kills is clearly better than every creature 2 damage kills. And when Forge's target is already the best it kills,
+ *   the spell is held if a clearly better creature could be killed soon (kicked Burst once 5 mana sources are there, or
+ *   a Sear in hand). Prismari Charm and Traumatic Critique are left alone.
+ * (S9, spellshock, Steam Vents' 2 life, is in MetaBrain.payShrine.)
  * spellplan7 — Prismari Charm damage over bounce (same report: 101 T9): when Forge chose the bounce mode on an opponent's
  *   creature that 1 damage kills, the damage mode is chosen instead: that creature, plus the opponent's best other
  *   creature 1 damage kills, else the opponent.
@@ -75,7 +83,8 @@ public class SpellBrain {
                 || a == forge.game.ability.ApiType.Scry || a == forge.game.ability.ApiType.Surveil;
     }
     static boolean onStoke(Player p) { return AiTweaks.on("spellstoke", p); }
-    static boolean any(Player p) { return on1(p) || on2(p) || on3(p) || on4(p) || on5(p) || on6(p) || on7(p) || on6t(p) || on6v(p) || onStoke(p); }
+    static boolean onRemoval(Player p) { return AiTweaks.on("spellremoval", p); }
+    static boolean any(Player p) { return on1(p) || on2(p) || on3(p) || on4(p) || on5(p) || on6(p) || on7(p) || on6t(p) || on6v(p) || onStoke(p) || onRemoval(p); }
     static final String SNARE = "Spell Snare", CHARM = "Prismari Charm";
     static final java.util.Set<String> CANTRIPS = java.util.Set.of("Opt", "Sleight of Hand");
     static final java.util.Set<String> REMOVAL = java.util.Set.of("Traumatic Critique", "Sear", "Burst Lightning");
@@ -297,6 +306,78 @@ public class SpellBrain {
     }
 
     /** vetoes of Forge's choice */
+    /** the part of SA that deals damage to a target (Impractical Joke's is a sub-ability) */
+    static SpellAbility damagePart(SpellAbility sa) {
+        for (SpellAbility x = sa; x != null; x = x.getSubAbility())
+            if (x.getApi() == forge.game.ability.ApiType.DealDamage && x.usesTargeting()) return x;
+        return null;
+    }
+
+    /** S10: the opponent's most valuable creature DMG damage kills that D can target (null if none) */
+    static Card bestKill(Player op, SpellAbility d, int dmg) {
+        Card best = null; int bv = -1;
+        for (Card c : op.getCreaturesInPlay()) {
+            if (c.getNetToughness() - c.getDamage() > dmg || c.hasKeyword(forge.game.keyword.Keyword.INDESTRUCTIBLE) || !d.canTarget(c)) continue;
+            int v = forge.ai.ComputerUtilCard.evaluateCreature(c);
+            if (v > bv) { bv = v; best = c; }
+        }
+        return best;
+    }
+
+    static boolean clearlyBetter(Card a, Card b) {
+        return b == null || forge.ai.ComputerUtilCard.evaluateCreature(a) > forge.ai.ComputerUtilCard.evaluateCreature(b) * 1.2 + 10;
+    }
+
+    /** S10: retarget (or kick) Forge's removal onto the best creature it kills; null: Forge's choice stands */
+    static List<SpellAbility> removalTarget(Player me, Player op, SpellAbility pick) {
+        ControlBrain.count("spellremoval_seen");
+        SpellAbility d = damagePart(pick);
+        if (d == null || d.getTargets() == null) { ControlBrain.count("spellremoval_no_damage_part"); return null; }
+        Card cur = d.getTargets().getFirstTargetedCard();
+        if (cur == null || cur.getController() != op) { ControlBrain.count("spellremoval_not_a_creature_target"); return null; }   // face burn or no target
+        String n = pick.getHostCard().getName();
+        boolean burst = n.equals("Burst Lightning");
+        int dmg = burst ? (pick.isKicked() ? 4 : 2) : n.equals("Sear") ? 4 : 3;
+        Card best = bestKill(op, d, dmg);
+        if (burst && !pick.isKicked() && LandfallBrain.untappedSources(me) >= 5) {
+            Card big = bestKill(op, d, 4);
+            if (big != null && clearlyBetter(big, best) && clearlyBetter(big, cur)) {
+                List<forge.game.spellability.OptionalCostValue> v = forge.game.GameActionUtil.getOptionalCostValues(pick);
+                if (!v.isEmpty()) {
+                    SpellAbility k = forge.game.GameActionUtil.addOptionalCosts(pick, v);
+                    SpellAbility kd = damagePart(k);
+                    k.setActivatingPlayer(me);
+                    if (kd != null && forge.ai.ComputerUtilCost.canPayCost(k, me, false)) {
+                        kd.resetTargets(); kd.getTargets().add(big);
+                        ControlBrain.count("spellremoval_kicked");
+                        return List.of(k);
+                    }
+                }
+            }
+        }
+        if (best == null || best == cur || !clearlyBetter(best, cur)) {
+            // hold: a clearly more valuable creature we could kill soon (kicked Burst once 5 mana sources are there, or
+            // another removal spell in hand that kills it) is worth this spell more than the fodder Forge chose
+            Card big = bestKill(op, d, 4);
+            int sources = (int) me.getCardsIn(ZoneType.Battlefield).stream().filter(c -> c.isLand() && !c.getManaAbilities().isEmpty()).count()
+                    + (me.getCardsIn(ZoneType.Hand).stream().anyMatch(Card::isLand) ? 1 : 0);
+            boolean other = me.getCardsIn(ZoneType.Hand).stream().anyMatch(c -> c != pick.getHostCard() && c.getName().equals("Sear"));
+            if (big != null && big != cur && clearlyBetter(big, cur) && (burst && !pick.isKicked() && sources >= 5 || other)) {
+                ControlBrain.count("spellremoval_held_for_better");
+                return java.util.Collections.emptyList();
+            }
+            if (AiTweaks.has("spellremovaldbg")) {
+                StringBuilder b = new StringBuilder("spellremoval_kept " + cur.getName() + "=" + forge.ai.ComputerUtilCard.evaluateCreature(cur) + " dmg" + dmg + " mana" + LandfallBrain.untappedSources(me) + " |");
+                for (Card c : op.getCreaturesInPlay()) b.append(' ').append(c.getName()).append(' ').append(c.getNetPower()).append('/').append(c.getNetToughness()).append('=').append(forge.ai.ComputerUtilCard.evaluateCreature(c));
+                ControlBrain.count(b.toString());
+            } else ControlBrain.count("spellremoval_kept");
+            return null;
+        }
+        d.resetTargets(); d.getTargets().add(best);
+        ControlBrain.count("spellremoval_retarget");
+        return List.of(pick);
+    }
+
     static List<SpellAbility> post(Player me, List<SpellAbility> ai) {
         if (ai == null || ai.isEmpty() || !any(me)) return ai;
         SpellAbility pick = ai.get(0);
@@ -310,6 +391,12 @@ public class SpellBrain {
             int other = 0;
             for (Card c : me.getCardsIn(ZoneType.Hand)) if (c != h) other++;
             if (other >= 3) { ControlBrain.count("spellstoke_no_hand_dump"); return null; }
+        }
+        if (onRemoval(me) && op != null && (h.getName().equals("Burst Lightning") || h.getName().equals("Sear") || h.getName().equals("Impractical Joke"))) {
+            try {
+                List<SpellAbility> r = removalTarget(me, op, pick);
+                if (r != null) return r.isEmpty() ? null : r;   // empty: held (pass)
+            } catch (RuntimeException e) { ControlBrain.count("spellremoval_error_" + e.getClass().getSimpleName()); }
         }
         if (on2(me) && ours && LandfallBrain.named(h, CRAB) && op != null) {
             boolean oppUntapped = false;
