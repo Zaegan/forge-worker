@@ -68,6 +68,7 @@ public class ProwessBrain {
      *                            of a per-spell attacker
      *   prowessattack@NAME   P12 main 1: every per-spell attacker that no untapped opposing creature can block attacks,
      *                            unless the opponent's board could kill us next turn
+     *   prowessdmg1/2/3@NAME P14a-c the damage-turn planner (ProwessPlan), which replaces P10-P12 when on
      * Surplus mana = untapped lands less the mana value of the cheapest creature card in hand (cast that first). */
     static boolean P1(Player me) { return V3(me) || AiTweaks.on("prowessstoke", me); }
     static boolean P2(Player me) { return V3(me) || AiTweaks.on("prowesscantrip", me); }
@@ -331,11 +332,19 @@ public class ProwessBrain {
         PhaseType ph = g.getPhaseHandler().getPhase();
         if (!g.getPhaseHandler().isPlayerTurn(me)) {
             if (ph == PhaseType.COMBAT_DECLARE_BLOCKERS && P5(me)) return guard("prowessdefend", () -> defend(me, op));
+            if (ph == PhaseType.END_OF_TURN && ProwessPlan.tier(me) > 0) {   // P14: end-step removal only by exception
+                SpellAbility w = guard("prowessdmg", () -> ProwessPlan.endStep(me, op));
+                if (w != null) return w;
+            }
             if (ph == PhaseType.END_OF_TURN && P11(me)) {
                 SpellAbility w = guard("prowesswall", () -> wallEot(me, op));
                 if (w != null) return w;
             }
             return ph == PhaseType.END_OF_TURN ? endStep(me) : null;
+        }
+        if (ph == PhaseType.COMBAT_DECLARE_BLOCKERS && ProwessPlan.tier(me) > 0) {
+            SpellAbility ab = guard("prowessdmg", () -> ProwessPlan.afterBlocks(me));
+            if (ab != null) return ab;
         }
         if (ph == PhaseType.COMBAT_DECLARE_BLOCKERS && (P9(me) || P11(me))) {
             if (P11(me)) {
@@ -347,6 +356,7 @@ public class ProwessBrain {
         if (ph != PhaseType.MAIN1) return null;
         Line l = lethal(me, op);
         if (l == null) {
+            if (ProwessPlan.tier(me) > 0) return guard("prowessdmg", () -> ProwessPlan.main1(me, op));   // P14
             if (P12(me)) guard("prowessattack", () -> { evasiveAttack(me, op); return null; });
             if (P10(me)) {
                 SpellAbility pc = guard("prowessprecombat", () -> precombat(me, op));
