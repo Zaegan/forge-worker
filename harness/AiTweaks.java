@@ -53,6 +53,7 @@ import java.util.List;
  * lifeshock / lifeprecombat / lifeorder / lifewarp @NAME — Lifegain G1-G4 (MetaBrain); landtunnel / landlethal @NAME —
  *   Landfall F1, F2 (LandfallBrain).
  * azoriushold / dimirbetrayal / dimirlethal @NAME — stock meta decks' hypotheses A1, D1, D2 (MetaBrain).
+ * dragonmomo / dragonpassage / dragontutor / dragonnova @NAME — Boros Dragons B1-B4 (MetaBrain).
  * prowessstoke / prowesscantrip / prowesshaste / prowessdefend @NAME — Prowess hypotheses P1, P2, P4, P5, one switch each
  *   (add-ons to prowessplan; ProwessBrain). prowessplan2 is P3.
  * prowessplan3@NAME — prowessplan + held cantrips must draw/dig (not Secret Identity) + no Stoke Genius discarding 3+ cards.
@@ -456,6 +457,10 @@ public class AiTweaks {
         @Override
         public String chooseSomeType(String kind, SpellAbility sa, java.util.Collection<String> valid, boolean isOptional) {
             String r = super.chooseSomeType(kind, sa, valid, isOptional);
+            if (MetaBrain.b2(getPlayer()) && sa != null && sa.getHostCard() != null && sa.getHostCard().getName().equals(MetaBrain.PASSAGE)) {
+                String t = MetaBrain.passageType(getPlayer(), valid);   // dragonpassage@NAME (B2)
+                if (t != null) { if (!t.equals(r)) ControlBrain.count("dragonpassage_changed"); r = t; }
+            }
             if (on("spelltrace", getPlayer())) {   // named types: Cavern of Souls, Multiversal Passage (2026-10-25)
                 Game g = getPlayer().getGame();
                 forge.game.card.Card h = sa == null ? null : sa.getHostCard();

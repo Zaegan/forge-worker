@@ -27,6 +27,15 @@ import java.util.List;
  *                           when there is mana for both
  *   lifewarp@NAME       G4  no Haliya warp outside main 1 or with nothing able to attack: a castable 1-2 mana
  *                           permanent instead, else nothing
+ *   From scan bz-s10 (Boros Dragons vs Izzet Spellementals):
+ *   dragonmomo@NAME     B1  a flying non-Lemur creature spell while Momo, Friendly Flier is in hand and the discount is
+ *                           unused this turn: cast Momo first when the mana covers both (Momo's {W} + the spell less 1)
+ *   dragonpassage@NAME  B2  Multiversal Passage names the basic type of the colour our hand needs most for its sources
+ *                           (Forge named Island in a deck with no blue cards)
+ *   dragontutor@NAME    B3  no Maelstrom of the Spirit Dragon tutor (sacrificing it) while a creature in hand is
+ *                           castable: cast that creature instead
+ *   dragonnova@NAME     B4  main 1, Forge would pass, the opponent has no untapped creature and no untapped land: warp
+ *                           Nova Hellkite for its hasty damage
  * Only public information is used: the board, life totals and our own hand.
  */
 public class MetaBrain {
@@ -39,7 +48,13 @@ public class MetaBrain {
     static boolean g2(Player p) { return AiTweaks.on("lifeprecombat", p); }
     static boolean g3(Player p) { return AiTweaks.on("lifeorder", p); }
     static boolean g4(Player p) { return AiTweaks.on("lifewarp", p); }
-    static boolean any(Player p) { return a1(p) || d1(p) || d2(p) || g1(p) || g2(p) || g3(p) || g4(p); }
+    static boolean b1(Player p) { return AiTweaks.on("dragonmomo", p); }
+    static boolean b2(Player p) { return AiTweaks.on("dragonpassage", p); }
+    static boolean b3(Player p) { return AiTweaks.on("dragontutor", p); }
+    static boolean b4(Player p) { return AiTweaks.on("dragonnova", p); }
+    static boolean any(Player p) { return a1(p) || d1(p) || d2(p) || g1(p) || g2(p) || g3(p) || g4(p) || b1(p) || b3(p) || b4(p); }
+    static final String MOMO = "Momo, Friendly Flier", PASSAGE = "Multiversal Passage", MAELSTROM = "Maelstrom of the Spirit Dragon",
+            NOVA = "Nova Hellkite";
     static final String SHRINE = "Godless Shrine", HALIYA = "Haliya, Guided by Light";
     static final java.util.Set<String> GAIN_SOURCES = java.util.Set.of("Hinterland Sanctifier", "Case of the Uneaten Feast");
 
@@ -86,6 +101,35 @@ public class MetaBrain {
         return false;
     }
 
+    /** the mana value Forge's play SA will cost */
+    static int cost(SpellAbility sa) {
+        return sa.getPayCosts() == null || sa.getPayCosts().getTotalMana() == null ? sa.getHostCard().getCMC() : sa.getPayCosts().getTotalMana().getCMC();
+    }
+
+    /** a flying non-Lemur creature spell, the kind Momo discounts */
+    static boolean momoKind(Card c) { return c.isCreature() && c.hasKeyword(forge.game.keyword.Keyword.FLYING) && !c.getType().hasCreatureType("Lemur"); }
+
+    /** B2: the basic type for Multiversal Passage (null: Forge's choice) */
+    static String passageType(Player me, java.util.Collection<String> valid) {
+        String[][] cols = {{"W", "Plains"}, {"U", "Island"}, {"B", "Swamp"}, {"R", "Mountain"}, {"G", "Forest"}};
+        forge.card.mana.ManaCostShard[] sh = {forge.card.mana.ManaCostShard.WHITE, forge.card.mana.ManaCostShard.BLUE,
+                forge.card.mana.ManaCostShard.BLACK, forge.card.mana.ManaCostShard.RED, forge.card.mana.ManaCostShard.GREEN};
+        String best = null; double bs = 0;
+        for (int i = 0; i < cols.length; i++) {
+            if (!valid.contains(cols[i][1])) continue;
+            int need = 0, seen = 0, src = 0; final String col = cols[i][0];
+            for (Card c : me.getCardsIn(forge.game.zone.ZoneType.Hand)) if (!c.isLand()) need += c.getManaCost().getShardCount(sh[i]);
+            for (Card c : me.getCardsIn(java.util.List.of(forge.game.zone.ZoneType.Battlefield, forge.game.zone.ZoneType.Graveyard, forge.game.zone.ZoneType.Exile)))
+                if (!c.isLand()) seen += c.getManaCost().getShardCount(sh[i]);
+            for (Card c : me.getCardsIn(forge.game.zone.ZoneType.Battlefield))
+                if (c.isLand() && !c.getName().equals(PASSAGE) && c.getManaAbilities().stream().anyMatch(m -> m.canProduce(col))) src++;
+            if (need + seen == 0) continue;   // a colour we have shown no use for
+            double score = (need + 0.5 * seen + 0.01) / (src + 1);
+            if (score > bs) { bs = score; best = cols[i][1]; }
+        }
+        return best;
+    }
+
     /** vetoes on Forge's chosen play (null: pass instead) */
     static List<SpellAbility> post(Player me, List<SpellAbility> ai) {
         Game g = me.getGame();
@@ -96,9 +140,26 @@ public class MetaBrain {
             cr.sort((x, y) -> Integer.compare(y.getHostCard().getCMC(), x.getHostCard().getCMC()));
             if (!cr.isEmpty()) { ControlBrain.count("lifeprecombat_cast"); return List.of(cr.get(0)); }
         }
+        if (b4(me) && main1 && (ai == null || ai.isEmpty()) && op != null && op.getCreaturesInPlay().stream().noneMatch(Card::isUntapped)
+                && op.getCardsIn(forge.game.zone.ZoneType.Battlefield).stream().noneMatch(c -> c.isLand() && c.isUntapped())) {
+            for (SpellAbility sa : LandfallBrain.castable(me, forge.game.zone.ZoneType.Hand, NOVA))
+                if (LandfallBrain.isWarp(sa)) { ControlBrain.count("dragonnova_warp"); return List.of(sa); }
+        }
         if (ai == null || ai.isEmpty()) return ai;
         SpellAbility pick = ai.get(0);
         Card ph = pick.getHostCard();
+        boolean ours = g.getPhaseHandler().isPlayerTurn(me) && g.getStack().isEmpty();
+        if (b1(me) && ours && pick.isSpell() && ph != null && momoKind(ph) && !ph.getName().equals(MOMO)
+                && me.getCardsIn(forge.game.zone.ZoneType.Battlefield).stream().noneMatch(c -> c.getName().equals(MOMO))
+                && g.getStack().getSpellCardsCastThisTurn().stream().noneMatch(c -> c.getController() == me && momoKind(c))) {
+            List<SpellAbility> momo = castableHand(me, c -> c.getName().equals(MOMO));
+            if (!momo.isEmpty() && untapped(me) >= cost(pick)) { ControlBrain.count("dragonmomo_first"); return List.of(momo.get(0)); }
+        }
+        if (b3(me) && ours && !pick.isSpell() && ph != null && ph.getName().equals(MAELSTROM) && pick.getApi() == ApiType.ChangeZone) {
+            List<SpellAbility> cr = castableHand(me, c -> c.isCreature());
+            cr.sort((x, y) -> Integer.compare(y.getHostCard().getCMC(), x.getHostCard().getCMC()));
+            if (!cr.isEmpty()) { ControlBrain.count("dragontutor_deploy"); return List.of(cr.get(0)); }
+        }
         if (g1(me) && pick.isLandAbility() && ph != null && ph.getName().equals(SHRINE) && !(me.getLife() >= 6 && spellFor(me, untapped(me) + 1))) {
             for (Card c : me.getCardsIn(forge.game.zone.ZoneType.Hand))   // the Shrine would enter tapped: a Plains first
                 if (c.getName().equals("Plains"))
