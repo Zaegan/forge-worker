@@ -53,6 +53,17 @@ import java.util.List;
  *   kills is clearly better than every creature 2 damage kills. And when Forge's target is already the best it kills,
  *   the spell is held if a clearly better creature could be killed soon (kicked Burst once 5 mana sources are there, or
  *   a Sear in hand). Prismari Charm and Traumatic Critique are left alone.
+ * spellhold — S11 (2026-10-26, scan sl-s10: Landfall won 9 of 10 by fast doubling turns while our cheap removal had gone
+ *   on an earthbent land, Elves or a token and Mightform Harmonizer, Sapling Nursery's makers or a grown Chocobo then
+ *   stayed): save the answers for the payoffs. Forge's Burst Lightning, Sear, Impractical Joke or Traumatic Critique aimed
+ *   at an opponent's FODDER creature is held (we pass) unless we are under pressure or the kill opens our attack.
+ *   Fodder = a creature land (earthbent / animated), a token with no abilities beyond mana, or a creature with a mana
+ *   ability and no trigger once the opponent has 4+ lands (an early Llanowar Elves is still fair game). Payoffs (any
+ *   creature with a trigger or a static ability: Harmonizer, Chocobo, Icetill Explorer, Surrak) are never fodder.
+ *   Pressure = the opponent's creatures' total power times 3 is at least our life (we would die in about three of
+ *   their turns). The kill opens our attack when it is our turn before blocks and the target is an untapped creature
+ *   that could block one of our creatures able to attack. Creature values cannot draw this line: Forge rates a 0/1
+ *   Chocobo (126) below Llanowar Elves (151) and an earthbent Forest (181) near Harmonizer (231).
  * (S9, spellshock, Steam Vents' 2 life, is in MetaBrain.payShrine.)
  * spellplan7 — Prismari Charm damage over bounce (same report: 101 T9): when Forge chose the bounce mode on an opponent's
  *   creature that 1 damage kills, the damage mode is chosen instead: that creature, plus the opponent's best other
@@ -84,7 +95,8 @@ public class SpellBrain {
     }
     static boolean onStoke(Player p) { return AiTweaks.on("spellstoke", p); }
     static boolean onRemoval(Player p) { return AiTweaks.on("spellremoval", p); }
-    static boolean any(Player p) { return on1(p) || on2(p) || on3(p) || on4(p) || on5(p) || on6(p) || on7(p) || on6t(p) || on6v(p) || onStoke(p) || onRemoval(p); }
+    static boolean onHold(Player p) { return AiTweaks.on("spellhold", p); }
+    static boolean any(Player p) { return on1(p) || on2(p) || on3(p) || on4(p) || on5(p) || on6(p) || on7(p) || on6t(p) || on6v(p) || onStoke(p) || onRemoval(p) || onHold(p); }
     static final String SNARE = "Spell Snare", CHARM = "Prismari Charm";
     static final java.util.Set<String> CANTRIPS = java.util.Set.of("Opt", "Sleight of Hand");
     static final java.util.Set<String> REMOVAL = java.util.Set.of("Traumatic Critique", "Sear", "Burst Lightning");
@@ -378,6 +390,41 @@ public class SpellBrain {
         return List.of(pick);
     }
 
+    /** S11: a creature not worth an answer while the payoffs are still to come */
+    static boolean fodder(Card c, Player op) {
+        if (c.isLand()) return true;
+        boolean trig = !c.getTriggers().isEmpty() || !c.getStaticAbilities().isEmpty();
+        if (trig) return false;
+        if (c.isToken() && c.getNonManaAbilities().isEmpty()) return true;
+        if (!c.getManaAbilities().isEmpty()) {
+            long lands = op.getCardsIn(ZoneType.Battlefield).stream().filter(Card::isLand).count();
+            return lands >= 4;
+        }
+        return false;
+    }
+
+    static boolean pressured(Player me, Player op) {
+        int pow = 0;
+        for (Card c : op.getCreaturesInPlay()) if (!c.hasKeyword(forge.game.keyword.Keyword.DEFENDER)) pow += Math.max(0, c.getNetPower());
+        return pow * 3 >= me.getLife();
+    }
+
+    /** S11: killing T now lets one of our creatures attack past it */
+    static boolean opensAttack(Player me, Card t) {
+        Game g = me.getGame();
+        PhaseType ph = g.getPhaseHandler().getPhase();
+        if (!g.getPhaseHandler().isPlayerTurn(me) || !t.isUntapped()) return false;
+        if (ph != PhaseType.MAIN1 && ph != PhaseType.COMBAT_BEGIN && ph != PhaseType.UPKEEP && ph != PhaseType.DRAW) return false;
+        for (Card a : me.getCreaturesInPlay()) {
+            boolean can;
+            try { can = LandfallBrain.canAttackThisTurn(a) && forge.game.combat.CombatUtil.canBlock(a, t); } catch (Exception e) { can = false; }
+            if (can) return true;
+        }
+        return false;
+    }
+
+    static final java.util.Set<String> HOLD = java.util.Set.of("Burst Lightning", "Sear", "Impractical Joke", "Traumatic Critique");
+
     static List<SpellAbility> post(Player me, List<SpellAbility> ai) {
         if (ai == null || ai.isEmpty() || !any(me)) return ai;
         SpellAbility pick = ai.get(0);
@@ -397,6 +444,20 @@ public class SpellBrain {
                 List<SpellAbility> r = removalTarget(me, op, pick);
                 if (r != null) return r.isEmpty() ? null : r;   // empty: held (pass)
             } catch (RuntimeException e) { ControlBrain.count("spellremoval_error_" + e.getClass().getSimpleName()); }
+        }
+        if (onHold(me) && op != null && HOLD.contains(h.getName())) {
+            SpellAbility d = damagePart(pick);
+            Card t = d == null || d.getTargets() == null ? null : d.getTargets().getFirstTargetedCard();
+            if (t != null && t.getController() == op && t.isCreature() && fodder(t, op)) {
+                if (pressured(me, op)) ControlBrain.count("spellhold_fired_pressured");
+                else if (opensAttack(me, t)) ControlBrain.count("spellhold_fired_opens_attack");
+                else {
+                    ControlBrain.count("spellhold_held");
+                    if (AiTweaks.has("spellholddbg")) ControlBrain.count("spellhold_held " + h.getName() + " -> " + t.getName()
+                            + (t.isLand() ? " (land)" : t.isToken() ? " (token)" : "") + " T" + g.getPhaseHandler().getTurn());
+                    return null;
+                }
+            }
         }
         if (on2(me) && ours && LandfallBrain.named(h, CRAB) && op != null) {
             boolean oppUntapped = false;
