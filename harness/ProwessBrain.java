@@ -83,8 +83,10 @@ public class ProwessBrain {
      *  also block if it preserves an elusive attacker and sufficient life for lands that we have in play that we need to
      *  pay life to get the mana we need, or obviously if it's lethal"): after Forge declares our blocks, take back every
      *  block that is not needed to end combat above the life our lands need (1 per Great Hall of the Biblioplex in play;
-     *  0 without one: only lethal). Evasive creatures (flying, Elusive Otter) are taken off blocks first, then the most
-     *  valuable; the blocks that remain use our cheapest creatures. */
+     *  0 without one: only lethal). A block kept only for that life must not cost us our last creature the opponent
+     *  cannot block next turn (user: "the blocking scheme does not cause us to no longer have a creature left in play
+     *  that we do not think our opponent will be able to block"). Creatures they cannot block are taken off blocks
+     *  first, then the most valuable; the blocks that remain use our cheapest creatures. */
     static boolean P15(Player me) { return AiTweaks.on("prowessnoblock", me); }
 
     /** the spell (as chosen) draws, digs, scries or surveils */
@@ -681,28 +683,75 @@ public class ProwessBrain {
         return r;
     }
 
-    static boolean evasive(Card c) { return c.hasKeyword(Keyword.FLYING) || c.getName().equals("Elusive Otter"); }
+    /** P15: after this combat, do we keep a creature the opponent cannot block on our next turn? Their blockers then
+     *  are the creatures untapped now that are not attacking (or have vigilance) and survive combat. */
+    static boolean elusiveLeft(Player me, Combat combat) {
+        Player op = combat.getAttackingPlayer();
+        List<Card> theirs = new ArrayList<>();
+        for (Card o : op.getCreaturesInPlay()) {
+            if (!o.isUntapped() || (combat.isAttacking(o) && !o.hasKeyword(Keyword.VIGILANCE))) continue;
+            try { if (combat.isAttacking(o) && forge.ai.ComputerUtilCombat.combatantWouldBeDestroyed(op, o, combat)) continue; }
+            catch (Exception e) { }
+            theirs.add(o);
+        }
+        for (Card c : me.getCreaturesInPlay()) {
+            try { if (combat.isBlocking(c) && forge.ai.ComputerUtilCombat.combatantWouldBeDestroyed(me, c, combat)) continue; }
+            catch (Exception e) { continue; }
+            boolean free = true;
+            for (Card o : theirs) if (canBlock(c, c.getNetPower(), o)) { free = false; break; }
+            if (free) return true;
+        }
+        return false;
+    }
 
-    /** P15: take back the blocks we do not need to stay above lifeForLands */
+    /** P15: take back the blocks not needed to survive above lifeForLands; blocks kept only for that life (not to survive)
+     *  must leave us a creature the opponent cannot block next turn, if we would have one without blocking (user,
+     *  2026-10-26: "the blocking scheme does not cause us to no longer have a creature left in play that we do not think
+     *  our opponent will be able to block") */
     static void noBlock(Player me, Combat combat) {
         List<Card> bl = new ArrayList<>(combat.getAllBlockers());
         bl.removeIf(b -> b.getController() != me);
         if (bl.isEmpty()) return;
-        int floor = lifeForLands(me);
+        java.util.Map<Card, List<Card>> orig = new java.util.LinkedHashMap<>();
+        for (Card b : bl) orig.put(b, new ArrayList<>(combat.getAttackersBlockedBy(b)));
+        for (Card b : bl) for (Card a : orig.get(b)) combat.removeBlockAssignment(a, b);
+        boolean had = elusiveLeft(me, combat);
+        // blockers we would rather keep off blocks first: a creature they cannot block next turn, then the most valuable
+        java.util.Map<Card, Boolean> ev = new java.util.HashMap<>();
+        for (Card b : bl) {
+            boolean e = true;
+            for (Card o : combat.getAttackingPlayer().getCreaturesInPlay())
+                if ((!combat.isAttacking(o) || o.hasKeyword(Keyword.VIGILANCE)) && o.isUntapped() && canBlock(b, b.getNetPower(), o)) { e = false; break; }
+            ev.put(b, e);
+        }
         bl.sort((x, y) -> {
-            if (evasive(x) != evasive(y)) return evasive(x) ? -1 : 1;
+            if (!ev.get(x).equals(ev.get(y))) return ev.get(x) ? -1 : 1;
             return Integer.compare(forge.ai.ComputerUtilCard.evaluateCreature(y), forge.ai.ComputerUtilCard.evaluateCreature(x));
         });
+        int lands = lifeForLands(me);
+        int floor = keep(me, combat, bl, orig, lands);
+        if (lands > 0 && floor > 0 && had && !elusiveLeft(me, combat)) {
+            ControlBrain.count("prowessnoblock_elusive");
+            keep(me, combat, bl, orig, 0);   // only the blocks we need to survive
+        }
+    }
+
+    /** restore Forge's blocks, then take back each block (in order BL) not needed to end combat above FLOOR life;
+     *  returns the number kept */
+    static int keep(Player me, Combat combat, List<Card> bl, java.util.Map<Card, List<Card>> orig, int floor) {
+        for (Card b : bl) for (Card a : orig.get(b)) if (!combat.getAttackersBlockedBy(b).contains(a)) combat.addBlocker(a, b);
+        int kept = 0;
         for (Card b : bl) {
-            List<Card> from = new ArrayList<>(combat.getAttackersBlockedBy(b));
-            for (Card a : from) combat.removeBlockAssignment(a, b);
+            for (Card a : orig.get(b)) combat.removeBlockAssignment(a, b);
             boolean ok;
             try { ok = forge.ai.ComputerUtilCombat.lifeThatWouldRemain(me, combat) > floor; } catch (Exception e) { ok = false; }
             if (ok) ControlBrain.count("prowessnoblock_unblocked");
             else {
-                for (Card a : from) combat.addBlocker(a, b);
+                for (Card a : orig.get(b)) combat.addBlocker(a, b);
+                kept++;
                 ControlBrain.count(floor > 0 ? "prowessnoblock_kept_lands" : "prowessnoblock_kept_lethal");
             }
         }
+        return kept;
     }
 }
