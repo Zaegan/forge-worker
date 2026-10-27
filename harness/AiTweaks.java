@@ -53,6 +53,8 @@ import java.util.List;
  * lifeshock / lifeprecombat / lifeorder / lifewarp @NAME — Lifegain G1-G4 (MetaBrain); landtunnel / landlethal @NAME —
  *   Landfall F1, F2 (LandfallBrain).
  * azoriushold / dimirbetrayal / dimirlethal @NAME — stock meta decks' hypotheses A1, D1, D2 (MetaBrain).
+ * monline@NAME — the Eldrazi Monument + Bloodghast line (FetchBrain; implies fetchplay and ghastsac).
+ * ghastsac@NAME — when we sacrifice a creature (Eldrazi Monument, edicts), Bloodghast goes first (MetaBrain V1).
  * azplan@NAME — the Azorius turn planner (AzoriusPlan): one mana budget per turn cycle, counter mana kept for the
  *  opponent's turn, card flow at their end step (2026-10-26).
  * dragonmomo / dragonpassage / dragontutor / dragonnova @NAME — Boros Dragons B1-B4 (MetaBrain).
@@ -326,6 +328,7 @@ public class AiTweaks {
             ai = post("metaplan", ai, MetaBrain.any(getPlayer()) ? MetaBrain.post(getPlayer(), ai) : ai);
             ai = post("azplan", ai, AzoriusPlan.on(getPlayer()) ? AzoriusPlan.post(getAi(), getPlayer(), ai) : ai);
             ai = post("landorder", ai, LandOrder.on(getPlayer()) ? LandOrder.post(getPlayer(), ai) : ai);
+            ai = post("monline", ai, FetchBrain.MON(getPlayer()) ? FetchBrain.holdLand(getPlayer(), ai) : ai);
             ai = post("landseq", ai, on("landseq", getPlayer()) ? LandfallBrain.seq(getPlayer(), ai) : ai);
             ai = post("landseq", ai, LandfallBrain.seqOn(getPlayer()) ? LandfallBrain.seq2(getPlayer(), ai) : ai);
             ai = post("landtunnel", ai, LandfallBrain.f1(getPlayer()) ? LandfallBrain.tunnelFirst(getPlayer(), ai) : ai);
@@ -467,6 +470,13 @@ public class AiTweaks {
                         .append(" -> ").append(r ? "pay" : "decline").append("\n");
             }
             return r;
+        }
+
+        @Override
+        public forge.game.card.CardCollectionView choosePermanentsToSacrifice(SpellAbility sa, int min, int max,
+                                                                               forge.game.card.CardCollectionView valid, String message) {
+            forge.game.card.CardCollectionView r = super.choosePermanentsToSacrifice(sa, min, max, valid, message);
+            return MetaBrain.v1(getPlayer()) ? MetaBrain.ghastSac(getPlayer(), valid, r) : r;
         }
 
         @Override

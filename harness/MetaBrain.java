@@ -36,6 +36,9 @@ import java.util.List;
  *                           castable: cast that creature instead
  *   dragonnova@NAME     B4  main 1, Forge would pass, the opponent has no untapped creature and no untapped land: warp
  *                           Nova Hellkite for its hasty damage
+ *   For the Worldwake Vampires line (user 2026-10-27: "yeah, try sack lines"):
+ *   ghastsac@NAME       V1  a creature we must sacrifice (Eldrazi Monument's upkeep, an opponent's edict) is Bloodghast
+ *                           when we control one: it returns at our next land drop, so Monument costs us nothing
  * Only public information is used: the board, life totals and our own hand.
  */
 public class MetaBrain {
@@ -52,6 +55,7 @@ public class MetaBrain {
     static boolean b2(Player p) { return AiTweaks.on("dragonpassage", p); }
     static boolean b3(Player p) { return AiTweaks.on("dragontutor", p); }
     static boolean b4(Player p) { return AiTweaks.on("dragonnova", p); }
+    static boolean v1(Player p) { return AiTweaks.on("ghastsac", p) || FetchBrain.MON(p); }
     static boolean any(Player p) { return a1(p) || d1(p) || d2(p) || g1(p) || g2(p) || g3(p) || g4(p) || b1(p) || b3(p) || b4(p); }
     static final String MOMO = "Momo, Friendly Flier", PASSAGE = "Multiversal Passage", MAELSTROM = "Maelstrom of the Spirit Dragon",
             NOVA = "Nova Hellkite";
@@ -195,6 +199,25 @@ public class MetaBrain {
             }
         }
         return ai;
+    }
+
+    /** V1: Forge's sacrifice choice R from VALID, with Bloodghast in place of another creature of ours */
+    static forge.game.card.CardCollectionView ghastSac(Player me, forge.game.card.CardCollectionView valid, forge.game.card.CardCollectionView r) {
+        if (r == null || r.isEmpty()) return r;
+        List<Card> ghasts = new java.util.ArrayList<>();
+        for (Card c : valid) if (c.getController() == me && c.isCreature() && c.getName().equals("Bloodghast") && !r.contains(c)) ghasts.add(c);
+        boolean ours = false;
+        for (Card c : r) if (c.getController() == me && c.isCreature()) ours = true;
+        if (!ours) return r;
+        if (r.stream().anyMatch(c -> c.getName().equals("Bloodghast"))) { ControlBrain.count("ghastsac_forge_chose_bloodghast"); if (ghasts.isEmpty()) return r; }
+        if (ghasts.isEmpty()) { ControlBrain.count("ghastsac_no_bloodghast"); return r; }
+        forge.game.card.CardCollection out = new forge.game.card.CardCollection(r);
+        for (Card c : r)
+            if (!ghasts.isEmpty() && c.getController() == me && c.isCreature() && !c.getName().equals("Bloodghast")) {
+                out.remove(c); out.add(ghasts.remove(0));
+                ControlBrain.count("ghastsac_swapped " + c.getName());
+            }
+        return out;
     }
 
     /** D2: after Forge declares attackers, add every creature that can attack if the all-out attack is lethal */
