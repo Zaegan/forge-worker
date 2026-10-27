@@ -53,6 +53,8 @@ import java.util.List;
  * lifeshock / lifeprecombat / lifeorder / lifewarp @NAME — Lifegain G1-G4 (MetaBrain); landtunnel / landlethal @NAME —
  *   Landfall F1, F2 (LandfallBrain).
  * azoriushold / dimirbetrayal / dimirlethal @NAME — stock meta decks' hypotheses A1, D1, D2 (MetaBrain).
+ * azplan@NAME — the Azorius turn planner (AzoriusPlan): one mana budget per turn cycle, counter mana kept for the
+ *  opponent's turn, card flow at their end step (2026-10-26).
  * dragonmomo / dragonpassage / dragontutor / dragonnova @NAME — Boros Dragons B1-B4 (MetaBrain).
  * landorder@NAME — A6, any deck: a tapped land first when the untapped land's mana would go unused (LandOrder).
  * prowessstoke / prowesscantrip / prowesshaste / prowessdefend @NAME — Prowess hypotheses P1, P2, P4, P5, one switch each
@@ -258,6 +260,10 @@ public class AiTweaks {
                 SpellAbility d = dwarvesEtb(getPlayer());
                 if (d != null) return by("dwarvesetb", d);
             }
+            if (AzoriusPlan.on(getPlayer())) {
+                SpellAbility az = AzoriusPlan.choose(getAi(), getPlayer());
+                if (az != null) return by("azplan", az);
+            }
             if (ProwessBrain.ON(getPlayer())) {
                 SpellAbility pw = ProwessBrain.choose(getPlayer());
                 if (pw != null) return by("prowessplan", pw);
@@ -318,6 +324,7 @@ public class AiTweaks {
             ai = post("prowessplan", ai, ProwessBrain.ON(getPlayer()) ? ProwessBrain.post(getPlayer(), ai) : ai);
             ai = post("spellplan", ai, SpellBrain.any(getPlayer()) ? SpellBrain.post(getPlayer(), ai) : ai);
             ai = post("metaplan", ai, MetaBrain.any(getPlayer()) ? MetaBrain.post(getPlayer(), ai) : ai);
+            ai = post("azplan", ai, AzoriusPlan.on(getPlayer()) ? AzoriusPlan.post(getAi(), getPlayer(), ai) : ai);
             ai = post("landorder", ai, LandOrder.on(getPlayer()) ? LandOrder.post(getPlayer(), ai) : ai);
             ai = post("landseq", ai, on("landseq", getPlayer()) ? LandfallBrain.seq(getPlayer(), ai) : ai);
             ai = post("landseq", ai, LandfallBrain.seqOn(getPlayer()) ? LandfallBrain.seq2(getPlayer(), ai) : ai);
