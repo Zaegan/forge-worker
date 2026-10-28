@@ -16,6 +16,8 @@ import java.util.List;
  *                          5 games, and the opponent resolved Jace, Kaito, Beavers into the gap)
  *   dimirbetrayal@NAME D1  no Strategic Betrayal while the opponent controls no creature (it then exiles only their
  *                          graveyard; every Betrayal in the scan was cast that way, 6 games)
+ *   dimirfill@NAME D7      with D1: when Betrayal is held, cast the costliest other non-instant spell we can instead of
+ *                          passing (scan dl-s10 g7: Dream Beavers left uncast twice; 2026-10-27)
  *   dimirlethal@NAME   D2  attack with everything when the all-out attack is lethal even if the opponent blocks as well
  *                          as it can (one game went 4 turns without an attack, the opponent at 2 and no blockers)
  *   From scan gl-s10 (Orzhov Lifegain vs Mono-Green Landfall):
@@ -46,6 +48,7 @@ public class MetaBrain {
 
     static boolean a1(Player p) { return AiTweaks.on("azoriushold", p); }
     static boolean d1(Player p) { return AiTweaks.on("dimirbetrayal", p); }
+    static boolean dfill(Player p) { return AiTweaks.on("dimirfill", p); }
     static boolean d2(Player p) { return AiTweaks.on("dimirlethal", p); }
     static boolean g1(Player p) { return AiTweaks.on("lifeshock", p); }
     static boolean g2(Player p) { return AiTweaks.on("lifeprecombat", p); }
@@ -195,6 +198,11 @@ public class MetaBrain {
             }
             if (d1(me) && h.getName().equals(BETRAYAL) && op != null && op.getCreaturesInPlay().isEmpty()) {
                 ControlBrain.count("dimirbetrayal_held");
+                if (dfill(me)) {   // D7: the held Betrayal's mana goes to the costliest other spell we can cast now
+                    List<SpellAbility> alt = castableHand(me, c -> !c.isLand() && !c.isInstant() && !c.getName().equals(BETRAYAL));
+                    alt.sort((x, y) -> y.getHostCard().getCMC() - x.getHostCard().getCMC());
+                    if (!alt.isEmpty()) { ControlBrain.count("dimirfill_cast"); return List.of(alt.get(0)); }
+                }
                 return null;
             }
         }

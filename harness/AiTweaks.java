@@ -53,6 +53,7 @@ import java.util.List;
  * lifeshock / lifeprecombat / lifeorder / lifewarp @NAME — Lifegain G1-G4 (MetaBrain); landtunnel / landlethal @NAME —
  *   Landfall F1, F2 (LandfallBrain).
  * azoriushold / dimirbetrayal / dimirlethal @NAME — stock meta decks' hypotheses A1, D1, D2 (MetaBrain).
+ * dimirfill@NAME — D7, with dimirbetrayal: the held Betrayal's turn casts another spell instead of passing (MetaBrain).
  * monline@NAME — the Eldrazi Monument + Bloodghast line (FetchBrain; implies fetchplay and ghastsac).
  * ghastsac@NAME — when we sacrifice a creature (Eldrazi Monument, edicts), Bloodghast goes first (MetaBrain V1).
  * azplan@NAME — the Azorius turn planner (AzoriusPlan): one mana budget per turn cycle, counter mana kept for the
