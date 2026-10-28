@@ -62,6 +62,7 @@ import java.util.List;
  *  end-step card flow, main 1 (land first, sweeper, Starcage); azplan = all three.
  * dragonmomo / dragonpassage / dragontutor / dragonnova @NAME — Boros Dragons B1-B4 (MetaBrain).
  * landorder@NAME — A6, any deck: a tapped land first when the untapped land's mana would go unused (LandOrder).
+ * landcolour@NAME — A11, any deck: another land when Forge's leaves fewer hand instants castable (LandColour).
  * prowessstoke / prowesscantrip / prowesshaste / prowessdefend @NAME — Prowess hypotheses P1, P2, P4, P5, one switch each
  *   (add-ons to prowessplan; ProwessBrain). prowessplan2 is P3.
  * prowessplan3@NAME — prowessplan + held cantrips must draw/dig (not Secret Identity) + no Stoke Genius discarding 3+ cards.
@@ -331,6 +332,7 @@ public class AiTweaks {
             ai = post("metaplan", ai, MetaBrain.any(getPlayer()) ? MetaBrain.post(getPlayer(), ai) : ai);
             ai = post("azplan", ai, AzoriusPlan.any(getPlayer()) ? AzoriusPlan.post(getAi(), getPlayer(), ai) : ai);
             ai = post("landorder", ai, LandOrder.on(getPlayer()) ? LandOrder.post(getPlayer(), ai) : ai);
+            ai = post("landcolour", ai, LandColour.on(getPlayer()) ? LandColour.post(getPlayer(), ai) : ai);
             ai = post("monline", ai, FetchBrain.MON(getPlayer()) ? FetchBrain.holdLand(getPlayer(), ai) : ai);
             ai = post("landseq", ai, on("landseq", getPlayer()) ? LandfallBrain.seq(getPlayer(), ai) : ai);
             ai = post("landseq", ai, LandfallBrain.seqOn(getPlayer()) ? LandfallBrain.seq2(getPlayer(), ai) : ai);
