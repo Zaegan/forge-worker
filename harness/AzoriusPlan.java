@@ -32,9 +32,17 @@ import java.util.Set;
  *   their end step the reserve is released: Wan Shi Tong (X >= 2), Consult the Star Charts, a Fountainport Fish,
  *             in that order, then Forge (Three Steps Ahead's loot via A1).
  * Only public information: the board, life totals, the opponent's hand size and our own hand.
+ * The split (2026-10-27; A10 was net negative, +306 -358): each part alone, azplan = all three.
+ *   azplanres@NAME   the reserve: vetoes of plays that eat the counter mana (our turn and theirs), with the alternatives
+ *   azplanflow@NAME  card flow: deferred on our turn, cast at the opponent's end step
+ *   azplanmain@NAME  main 1: land first, Day of Judgment and Starcage cast by the board tests
  */
 public class AzoriusPlan {
     static boolean on(Player p) { return AiTweaks.on("azplan", p); }
+    static boolean resOn(Player p) { return on(p) || AiTweaks.on("azplanres", p); }
+    static boolean flowOn(Player p) { return on(p) || AiTweaks.on("azplanflow", p); }
+    static boolean mainOn(Player p) { return on(p) || AiTweaks.on("azplanmain", p); }
+    static boolean any(Player p) { return resOn(p) || flowOn(p) || mainOn(p); }
 
     static final String NML = "No More Lies", TSA = "Three Steps Ahead", CONSULT = "Consult the Star Charts", WAN = "Wan Shi Tong, Librarian",
             PORT = "Fountainport", DOJ = "Day of Judgment", CAGE = "Pinnacle Starcage";
@@ -120,7 +128,7 @@ public class AzoriusPlan {
         if (op == null) return null;
         PhaseType ph = g.getPhaseHandler().getPhase();
         if (!g.getPhaseHandler().isPlayerTurn(me)) {
-            if (ph != PhaseType.END_OF_TURN) return null;
+            if (ph != PhaseType.END_OF_TURN || !flowOn(me)) return null;
             if (LandfallBrain.untappedSources(me) >= 4) {
                 SpellAbility w = ControlBrain.castable(me, WAN);
                 if (w != null) { ControlBrain.count("azplan_eot_wan"); return w; }
@@ -131,7 +139,7 @@ public class AzoriusPlan {
             if (f != null) { ControlBrain.count("azplan_eot_fish"); return f; }
             return null;
         }
-        if (ph != PhaseType.MAIN1) return null;
+        if (ph != PhaseType.MAIN1 || !mainOn(me)) return null;
         SpellAbility land = ControlBrain.landFirst(ai, me);
         if (land != null) { ControlBrain.count("azplan_land_first"); return land; }
         if (sweepWorth(me, op)) {
@@ -175,14 +183,14 @@ public class AzoriusPlan {
         PhaseType ph = g.getPhaseHandler().getPhase();
         String n = h.getName();
         if (!g.getPhaseHandler().isPlayerTurn(me)) {
-            if (ph == PhaseType.END_OF_TURN || have - k >= res) return in;
+            if (!resOn(me) || ph == PhaseType.END_OF_TURN || have - k >= res) return in;
             if (lethalAttack(me) || pressured && REMOVAL.contains(n)) { ControlBrain.count("azplan_their_turn_allowed"); return in; }
             ControlBrain.count("azplan_their_turn_kept");
             return null;
         }
         boolean veto;
-        if (flow(pick)) veto = true;
-        else if (have - k >= res) veto = false;
+        if (flow(pick)) veto = flowOn(me);
+        else if (!resOn(me) || have - k >= res) veto = false;
         else veto = !(pressured && ANSWERS.contains(n) || THREATS.contains(n) && op.getCardsIn(ZoneType.Hand).size() <= 2);
         if (!veto) return in;
         ControlBrain.count(flow(pick) ? "azplan_flow_deferred" : "azplan_kept");

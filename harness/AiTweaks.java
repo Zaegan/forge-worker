@@ -57,6 +57,8 @@ import java.util.List;
  * ghastsac@NAME — when we sacrifice a creature (Eldrazi Monument, edicts), Bloodghast goes first (MetaBrain V1).
  * azplan@NAME — the Azorius turn planner (AzoriusPlan): one mana budget per turn cycle, counter mana kept for the
  *  opponent's turn, card flow at their end step (2026-10-26).
+ * azplanres / azplanflow / azplanmain @NAME — the planner's parts alone (2026-10-27): the counter-mana reserve, the
+ *  end-step card flow, main 1 (land first, sweeper, Starcage); azplan = all three.
  * dragonmomo / dragonpassage / dragontutor / dragonnova @NAME — Boros Dragons B1-B4 (MetaBrain).
  * landorder@NAME — A6, any deck: a tapped land first when the untapped land's mana would go unused (LandOrder).
  * prowessstoke / prowesscantrip / prowesshaste / prowessdefend @NAME — Prowess hypotheses P1, P2, P4, P5, one switch each
@@ -262,7 +264,7 @@ public class AiTweaks {
                 SpellAbility d = dwarvesEtb(getPlayer());
                 if (d != null) return by("dwarvesetb", d);
             }
-            if (AzoriusPlan.on(getPlayer())) {
+            if (AzoriusPlan.any(getPlayer())) {
                 SpellAbility az = AzoriusPlan.choose(getAi(), getPlayer());
                 if (az != null) return by("azplan", az);
             }
@@ -326,7 +328,7 @@ public class AiTweaks {
             ai = post("prowessplan", ai, ProwessBrain.ON(getPlayer()) ? ProwessBrain.post(getPlayer(), ai) : ai);
             ai = post("spellplan", ai, SpellBrain.any(getPlayer()) ? SpellBrain.post(getPlayer(), ai) : ai);
             ai = post("metaplan", ai, MetaBrain.any(getPlayer()) ? MetaBrain.post(getPlayer(), ai) : ai);
-            ai = post("azplan", ai, AzoriusPlan.on(getPlayer()) ? AzoriusPlan.post(getAi(), getPlayer(), ai) : ai);
+            ai = post("azplan", ai, AzoriusPlan.any(getPlayer()) ? AzoriusPlan.post(getAi(), getPlayer(), ai) : ai);
             ai = post("landorder", ai, LandOrder.on(getPlayer()) ? LandOrder.post(getPlayer(), ai) : ai);
             ai = post("monline", ai, FetchBrain.MON(getPlayer()) ? FetchBrain.holdLand(getPlayer(), ai) : ai);
             ai = post("landseq", ai, on("landseq", getPlayer()) ? LandfallBrain.seq(getPlayer(), ai) : ai);
