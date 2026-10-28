@@ -29,6 +29,16 @@ import java.util.List;
  *                           when there is mana for both
  *   lifewarp@NAME       G4  no Haliya warp outside main 1 or with nothing able to attack: a castable 1-2 mana
  *                           permanent instead, else nothing
+ *   From scan al-s10 (Lifegain as Azorius Control's opponent, 2026-10-28; G7 in pilot/TUNE_TARGETS.md):
+ *   lifeorder2@NAME     G7a G3 with Liliana the Faultless and a hard-cast Haliya as gain sources too, also applied to
+ *                           G2's precombat creature (5 games cast the source after the creature it triggers on)
+ *   lifeshock2@NAME     G7b Godless Shrine untapped only when the extra mana casts more of the hand this turn (by mana
+ *                           value, or the only source of a colour a castable card needs), at 6+ life; G1 paid at 12+ for
+ *                           nothing (5 games)
+ *   lifeempty@NAME      G7c no Emptiness evoke when neither mode has a target (no creature on the opponent's side, no
+ *                           creature of mana value 3 or less in our graveyard): the costliest other castable permanent
+ *   lifelegend@NAME     G7d no legendary creature spell while we control one of the same name: the costliest other
+ *                           castable permanent instead (3 duplicate Amalia/Haliya casts)
  *   From scan bz-s10 (Boros Dragons vs Izzet Spellementals):
  *   dragonmomo@NAME     B1  a flying non-Lemur creature spell while Momo, Friendly Flier is in hand and the discount is
  *                           unused this turn: cast Momo first when the mana covers both (Momo's {W} + the spell less 1)
@@ -54,16 +64,24 @@ public class MetaBrain {
     static boolean g2(Player p) { return AiTweaks.on("lifeprecombat", p); }
     static boolean g3(Player p) { return AiTweaks.on("lifeorder", p); }
     static boolean g4(Player p) { return AiTweaks.on("lifewarp", p); }
+    static boolean g7a(Player p) { return AiTweaks.on("lifeorder2", p); }
+    static boolean g7b(Player p) { return AiTweaks.on("lifeshock2", p); }
+    static boolean g7c(Player p) { return AiTweaks.on("lifeempty", p); }
+    static boolean g7d(Player p) { return AiTweaks.on("lifelegend", p); }
+    static boolean g7(Player p) { return g7a(p) || g7b(p) || g7c(p) || g7d(p); }
     static boolean b1(Player p) { return AiTweaks.on("dragonmomo", p); }
     static boolean b2(Player p) { return AiTweaks.on("dragonpassage", p); }
     static boolean b3(Player p) { return AiTweaks.on("dragontutor", p); }
     static boolean b4(Player p) { return AiTweaks.on("dragonnova", p); }
     static boolean v1(Player p) { return AiTweaks.on("ghastsac", p) || FetchBrain.MON(p); }
-    static boolean any(Player p) { return a1(p) || d1(p) || d2(p) || g1(p) || g2(p) || g3(p) || g4(p) || b1(p) || b3(p) || b4(p); }
+    static boolean any(Player p) { return a1(p) || d1(p) || d2(p) || g1(p) || g2(p) || g3(p) || g4(p) || b1(p) || b3(p) || b4(p) || g7(p); }
     static final String MOMO = "Momo, Friendly Flier", PASSAGE = "Multiversal Passage", MAELSTROM = "Maelstrom of the Spirit Dragon",
             NOVA = "Nova Hellkite";
     static final String SHRINE = "Godless Shrine", HALIYA = "Haliya, Guided by Light";
     static final java.util.Set<String> GAIN_SOURCES = java.util.Set.of("Hinterland Sanctifier", "Case of the Uneaten Feast");
+    static final java.util.Set<String> GAIN_SOURCES2 = java.util.Set.of("Hinterland Sanctifier", "Case of the Uneaten Feast",
+            "Liliana the Faultless", HALIYA);
+    static final String EMPTINESS = "Emptiness";
 
     static int untapped(Player me) {
         return (int) me.getCardsIn(forge.game.zone.ZoneType.Battlefield).stream().filter(c -> c.isLand() && c.isUntapped()).count();
@@ -82,9 +100,78 @@ public class MetaBrain {
         String n = sa.getHostCard().getName();
         if (!(g1(me) && n.equals(SHRINE) || AiTweaks.on("spellshock", me) && n.equals("Steam Vents"))) return null;
         boolean ours = me.getGame().getPhaseHandler().isPlayerTurn(me);
+        if (g7b(me) && n.equals(SHRINE)) {
+            boolean pay = ours && me.getLife() >= 6 && shrineGains(me);
+            ControlBrain.count("lifeshock2" + (pay ? "_paid" : "_tapped"));
+            return pay;
+        }
         boolean pay = me.getLife() >= 12 || ours && me.getLife() >= 6 && spellFor(me, untapped(me) + 1);
         ControlBrain.count((n.equals(SHRINE) ? "lifeshock" : "spellshock") + (pay ? "_paid" : "_tapped"));
         return pay;
+    }
+
+    /** G7b: one more untapped land casts more of the hand this turn: a larger total mana value fits, or a castable card
+     *  needs a colour (W or B) no untapped land of ours makes */
+    static boolean shrineGains(Player me) {
+        int m = untapped(me);
+        List<Integer> cmc = new java.util.ArrayList<>();
+        boolean colour = false;
+        forge.card.mana.ManaCostShard[] sh = {forge.card.mana.ManaCostShard.WHITE, forge.card.mana.ManaCostShard.BLACK};
+        String[] col = {"W", "B"};
+        for (Card c : me.getCardsIn(forge.game.zone.ZoneType.Hand)) {
+            if (c.isLand() || c.getCMC() < 1 || dupLegend(me, c)) continue;
+            cmc.add(c.getCMC());
+            if (c.getCMC() > m + 1) continue;
+            for (int i = 0; i < sh.length; i++) {
+                final String k = col[i];
+                if (c.getManaCost().getShardCount(sh[i]) > 0 && me.getCardsIn(forge.game.zone.ZoneType.Battlefield).stream()
+                        .noneMatch(l -> l.isLand() && l.isUntapped() && l.getManaAbilities().stream().anyMatch(a -> a.canProduce(k)))) colour = true;
+            }
+        }
+        return colour || fits(cmc, m + 1) > fits(cmc, m);
+    }
+
+    /** the largest total of a subset of XS that is at most CAP */
+    static int fits(List<Integer> xs, int cap) {
+        boolean[] can = new boolean[Math.max(cap, 0) + 1];
+        can[0] = true;
+        for (int x : xs) for (int t = cap; t >= x; t--) if (can[t - x]) can[t] = true;
+        for (int t = cap; t > 0; t--) if (can[t]) return t;
+        return 0;
+    }
+
+    /** G7d: a legendary creature card whose name we already control */
+    static boolean dupLegend(Player me, Card c) {
+        return c.isCreature() && c.getType().isLegendary()
+                && me.getCardsIn(forge.game.zone.ZoneType.Battlefield).stream().anyMatch(b -> b != c && b.getName().equals(c.getName()));
+    }
+
+    /** G7c: an Emptiness evoke with a target for neither mode */
+    static boolean idleEvoke(Player me, SpellAbility sa) {
+        Card h = sa.getHostCard();
+        if (h == null || !h.getName().equals(EMPTINESS) || !sa.isEvoke()) return false;
+        Player op = ProwessBrain.opponent(me);
+        boolean bTarget = op != null && !op.getCreaturesInPlay().isEmpty();
+        boolean wTarget = me.getCardsIn(forge.game.zone.ZoneType.Graveyard).stream().anyMatch(c -> c.isCreature() && c.getCMC() <= 3);
+        return !bTarget && !wTarget;
+    }
+
+    /** a G7 veto of SA (c: Emptiness evoke with no target; d: a duplicate legend) */
+    static String g7veto(Player me, SpellAbility sa) {
+        Card h = sa.getHostCard();
+        if (h == null || !sa.isSpell()) return null;
+        if (g7c(me) && idleEvoke(me, sa)) return "lifeempty";
+        if (g7d(me) && dupLegend(me, h)) return "lifelegend";
+        return null;
+    }
+
+    /** G7c/G7d: the costliest castable permanent spell of the hand that no G7 rule vetoes (null: pass) */
+    static List<SpellAbility> g7alt(Player me, String why) {
+        List<SpellAbility> alt = castableHand(me, c -> !c.isLand() && !c.isInstant() && !c.isSorcery());
+        alt.removeIf(sa -> g7veto(me, sa) != null);
+        alt.sort((x, y) -> Integer.compare(cost(y), cost(x)));
+        ControlBrain.count(why + (alt.isEmpty() ? "_pass" : "_alt"));
+        return alt.isEmpty() ? null : List.of(alt.get(0));
     }
 
     /** castable spells of our hand cards matching P */
@@ -146,8 +233,13 @@ public class MetaBrain {
         boolean main1 = g.getPhaseHandler().isPlayerTurn(me) && g.getPhaseHandler().getPhase() == PhaseType.MAIN1 && g.getStack().isEmpty();
         if (g2(me) && main1 && (ai == null || ai.isEmpty()) && op != null && op.getCreaturesInPlay().stream().noneMatch(Card::isUntapped)) {
             List<SpellAbility> cr = castableHand(me, c -> c.isCreature());
+            if (g7(me)) cr.removeIf(sa -> g7veto(me, sa) != null);
             cr.sort((x, y) -> Integer.compare(y.getHostCard().getCMC(), x.getHostCard().getCMC()));
-            if (!cr.isEmpty()) { ControlBrain.count("lifeprecombat_cast"); return List.of(cr.get(0)); }
+            if (!cr.isEmpty()) {
+                ControlBrain.count("lifeprecombat_cast");
+                if (!g7a(me)) return List.of(cr.get(0));
+                ai = List.of(cr.get(0));   // G7a: the precombat creature goes through the source-first check below
+            }
         }
         if (b4(me) && main1 && (ai == null || ai.isEmpty()) && op != null && op.getCreaturesInPlay().stream().noneMatch(Card::isUntapped)
                 && op.getCardsIn(forge.game.zone.ZoneType.Battlefield).stream().noneMatch(c -> c.isLand() && c.isUntapped())) {
@@ -169,7 +261,12 @@ public class MetaBrain {
             cr.sort((x, y) -> Integer.compare(y.getHostCard().getCMC(), x.getHostCard().getCMC()));
             if (!cr.isEmpty()) { ControlBrain.count("dragontutor_deploy"); return List.of(cr.get(0)); }
         }
-        if (g1(me) && pick.isLandAbility() && ph != null && ph.getName().equals(SHRINE) && !(me.getLife() >= 6 && spellFor(me, untapped(me) + 1))) {
+        if (g7(me) && ours && pick.isSpell()) {
+            String why = g7veto(me, pick);
+            if (why != null) { ControlBrain.count(why + "_vetoed"); return g7alt(me, why); }
+        }
+        if ((g1(me) || g7b(me)) && pick.isLandAbility() && ph != null && ph.getName().equals(SHRINE)
+                && !(me.getLife() >= 6 && (g7b(me) ? shrineGains(me) : spellFor(me, untapped(me) + 1)))) {
             for (Card c : me.getCardsIn(forge.game.zone.ZoneType.Hand))   // the Shrine would enter tapped: a Plains first
                 if (c.getName().equals("Plains"))
                     for (SpellAbility sa : c.getAllPossibleAbilities(me, true))
@@ -183,11 +280,12 @@ public class MetaBrain {
                 return cheap.isEmpty() ? null : List.of(cheap.get(0));
             }
         }
-        if (g3(me) && pick.isSpell() && ph != null && ph.isCreature() && !GAIN_SOURCES.contains(ph.getName())) {
-            List<SpellAbility> src = castableHand(me, c -> GAIN_SOURCES.contains(c.getName()));
+        java.util.Set<String> sources = g7a(me) ? GAIN_SOURCES2 : GAIN_SOURCES;
+        if ((g3(me) || g7a(me)) && pick.isSpell() && ph != null && ph.isCreature() && !sources.contains(ph.getName())) {
+            List<SpellAbility> src = castableHand(me, c -> sources.contains(c.getName()) && !dupLegend(me, c));
             int cost = pick.getPayCosts() == null || pick.getPayCosts().getTotalMana() == null ? ph.getCMC() : pick.getPayCosts().getTotalMana().getCMC();
             for (SpellAbility sa : src)
-                if (untapped(me) >= cost + sa.getHostCard().getCMC()) { ControlBrain.count("lifeorder_source_first"); return List.of(sa); }
+                if (untapped(me) >= cost + sa.getHostCard().getCMC()) { ControlBrain.count(g7a(me) ? "lifeorder2_source_first" : "lifeorder_source_first"); return List.of(sa); }
         }
         for (SpellAbility sa : ai) {
             Card h = sa.getHostCard();
