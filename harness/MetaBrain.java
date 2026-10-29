@@ -39,6 +39,8 @@ import java.util.List;
  *                           creature of mana value 3 or less in our graveyard): the costliest other castable permanent
  *   lifelegend@NAME     G7d no legendary creature spell while we control one of the same name: the costliest other
  *                           castable permanent instead (3 duplicate Amalia/Haliya casts)
+ *   lifeconvo@NAME      G5  no Lunar Convocation draw (2 life) when it leaves us within reach of the opponent's board:
+ *                           life after paying at most the total power of their creatures, or 4 or less (scan gl-s10)
  *   From scan bz-s10 (Boros Dragons vs Izzet Spellementals):
  *   dragonmomo@NAME     B1  a flying non-Lemur creature spell while Momo, Friendly Flier is in hand and the discount is
  *                           unused this turn: cast Momo first when the mana covers both (Momo's {W} + the spell less 1)
@@ -69,12 +71,13 @@ public class MetaBrain {
     static boolean g7c(Player p) { return AiTweaks.on("lifeempty", p); }
     static boolean g7d(Player p) { return AiTweaks.on("lifelegend", p); }
     static boolean g7(Player p) { return g7a(p) || g7b(p) || g7c(p) || g7d(p); }
+    static boolean g5(Player p) { return AiTweaks.on("lifeconvo", p); }
     static boolean b1(Player p) { return AiTweaks.on("dragonmomo", p); }
     static boolean b2(Player p) { return AiTweaks.on("dragonpassage", p); }
     static boolean b3(Player p) { return AiTweaks.on("dragontutor", p); }
     static boolean b4(Player p) { return AiTweaks.on("dragonnova", p); }
     static boolean v1(Player p) { return AiTweaks.on("ghastsac", p) || FetchBrain.MON(p); }
-    static boolean any(Player p) { return a1(p) || d1(p) || d2(p) || g1(p) || g2(p) || g3(p) || g4(p) || b1(p) || b3(p) || b4(p) || g7(p); }
+    static boolean any(Player p) { return a1(p) || d1(p) || d2(p) || g1(p) || g2(p) || g3(p) || g4(p) || b1(p) || b3(p) || b4(p) || g7(p) || g5(p); }
     static final String MOMO = "Momo, Friendly Flier", PASSAGE = "Multiversal Passage", MAELSTROM = "Maelstrom of the Spirit Dragon",
             NOVA = "Nova Hellkite";
     static final String SHRINE = "Godless Shrine", HALIYA = "Haliya, Guided by Light";
@@ -260,6 +263,11 @@ public class MetaBrain {
             List<SpellAbility> cr = castableHand(me, c -> c.isCreature());
             cr.sort((x, y) -> Integer.compare(y.getHostCard().getCMC(), x.getHostCard().getCMC()));
             if (!cr.isEmpty()) { ControlBrain.count("dragontutor_deploy"); return List.of(cr.get(0)); }
+        }
+        if (g5(me) && !pick.isSpell() && ph != null && ph.getName().equals("Lunar Convocation") && pick.getApi() == ApiType.Draw && op != null) {
+            int power = op.getCreaturesInPlay().stream().mapToInt(c -> Math.max(0, c.getNetPower())).sum();
+            if (me.getLife() - 2 <= Math.max(power, 4)) { ControlBrain.count("lifeconvo_held"); return null; }
+            ControlBrain.count("lifeconvo_drawn");
         }
         if (g7(me) && ours && pick.isSpell()) {
             String why = g7veto(me, pick);

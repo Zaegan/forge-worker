@@ -64,6 +64,7 @@ import java.util.List;
  * landorder@NAME — A6, any deck: a tapped land first when the untapped land's mana would go unused (LandOrder).
  * landcolour@NAME — A11, any deck: another land when Forge's leaves fewer hand instants castable (LandColour).
  * lifeorder2 / lifeshock2 / lifeempty / lifelegend @NAME — Lifegain G7a-G7d (MetaBrain, 2026-10-28).
+ * lifeconvo@NAME — Lifegain G5: no Lunar Convocation draw that leaves us within reach of the opponent's board (MetaBrain).
  * prowessstoke / prowesscantrip / prowesshaste / prowessdefend @NAME — Prowess hypotheses P1, P2, P4, P5, one switch each
  *   (add-ons to prowessplan; ProwessBrain). prowessplan2 is P3.
  * prowessplan3@NAME — prowessplan + held cantrips must draw/dig (not Secret Identity) + no Stoke Genius discarding 3+ cards.
