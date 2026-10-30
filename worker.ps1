@@ -31,7 +31,7 @@ param(
     [int]$IdleWait = 20                     # seconds to wait before asking again when the server has no work
 )
 $Waiting = 2                                # games queued in each game worker beyond the one it is playing
-$ClientVersion = 10                         # the server can ask clients older than its minimum to update
+$ClientVersion = 11                         # the server can ask clients older than its minimum to update
 $ErrorActionPreference = "Stop"
 $ProgressPreference = "SilentlyContinue"   # Invoke-WebRequest's progress bar makes downloads very slow on PS 5.1
 [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
@@ -196,6 +196,14 @@ if ($Watchdog) {
 }
 
 # a normal start: this is the worker; a deliberate stop is cleared
+# one worker per folder (v11, 2026-10-29: four duplicate watchdog lines on tester2 each started one): an exclusive lock
+# on worker.lock, held until this process exits (.NET takes it with flock on Linux); a second start exits at once
+try { $script:LockStream = [IO.File]::Open((Join-Path $Dir "worker.lock"), 'OpenOrCreate', 'ReadWrite', 'None') }
+catch {
+    Add-Content -Path (Join-Path $Dir "worker.log") -Value ("{0} another worker is already running in {1}: this start exits" -f (Get-Date -Format "HH:mm:ss"), $Dir)
+    Write-Host "Forge Worker is already running."
+    exit 0
+}
 $script:StartedAt = [DateTimeOffset]::UtcNow.ToUnixTimeSeconds()   # sent with job requests (v9); UTC (PS 5.1's -UFormat %s is local time)
 if (Test-Path $stopMark) { Remove-Item $stopMark -Force }
 Set-Content -Path $pidFile -Value $PID
