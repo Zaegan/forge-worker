@@ -78,6 +78,7 @@ public class MetaBrain {
     static boolean b4(Player p) { return AiTweaks.on("dragonnova", p); }
     static boolean v1(Player p) { return AiTweaks.on("ghastsac", p) || FetchBrain.MON(p); }
     static boolean any(Player p) { return a1(p) || d1(p) || d2(p) || g1(p) || g2(p) || g3(p) || g4(p) || b1(p) || b3(p) || b4(p) || g7(p) || g5(p); }
+    /* azholdvoice@NAME (A12b) and dragontutor2@NAME (B5d) are documented in MetaBrain2 */
     static final String MOMO = "Momo, Friendly Flier", PASSAGE = "Multiversal Passage", MAELSTROM = "Maelstrom of the Spirit Dragon",
             NOVA = "Nova Hellkite";
     static final String SHRINE = "Godless Shrine", HALIYA = "Haliya, Guided by Light";
@@ -101,6 +102,10 @@ public class MetaBrain {
     static Boolean payShrine(forge.game.cost.Cost cost, SpellAbility sa, Player me) {
         if (sa == null || sa.getHostCard() == null || !cost.toSimpleString().contains("2 life")) return null;
         String n = sa.getHostCard().getName();
+        if (n.equals("Steam Vents") && ProwessBrain.L2(me) && ProwessBrain.ventsGame == me.getGame()
+                && ProwessBrain.ventsTurn == me.getGame().getPhaseHandler().getTurn() && me.getLife() > 2) {
+            ControlBrain.count("prowesslethal2_vents_paid"); return true;   // P16: the land drop of a lethal line
+        }
         if (!(g1(me) && n.equals(SHRINE) || AiTweaks.on("spellshock", me) && n.equals("Steam Vents"))) return null;
         boolean ours = me.getGame().getPhaseHandler().isPlayerTurn(me);
         if (g7b(me) && n.equals(SHRINE)) {
@@ -263,6 +268,12 @@ public class MetaBrain {
             List<SpellAbility> cr = castableHand(me, c -> c.isCreature());
             cr.sort((x, y) -> Integer.compare(y.getHostCard().getCMC(), x.getHostCard().getCMC()));
             if (!cr.isEmpty()) { ControlBrain.count("dragontutor_deploy"); return List.of(cr.get(0)); }
+            if (AiTweaks.on("dragontutor2", me))   // B5d (MetaBrain2): a creature castable from exile (warped Nova Hellkite)
+                for (Card c : me.getCardsIn(forge.game.zone.ZoneType.Exile))
+                    if (c.isCreature() && c.getOwner() == me)
+                        for (SpellAbility sa : LandfallBrain.castable(me, forge.game.zone.ZoneType.Exile, c.getName())) {
+                            ControlBrain.count("dragontutor2_exile"); return List.of(sa);
+                        }
         }
         if (g5(me) && !pick.isSpell() && ph != null && ph.getName().equals("Lunar Convocation") && pick.getApi() == ApiType.Draw && op != null) {
             int power = op.getCreaturesInPlay().stream().mapToInt(c -> Math.max(0, c.getNetPower())).sum();
@@ -299,6 +310,9 @@ public class MetaBrain {
             Card h = sa.getHostCard();
             if (h == null || h.getController() != me || !sa.isSpell()) continue;
             if (a1(me) && h.getName().equals(THREE_STEPS) && !hasMode(sa, ApiType.Counter)) {
+                if (AiTweaks.on("azholdvoice", me) && g.getPhaseHandler().isPlayerTurn(me) && MetaBrain2.voiceOut(op)) {
+                    ControlBrain.count("azholdvoice_allowed"); continue;   // A12b: under Voice there is no end step to wait for
+                }
                 boolean oppEnd = !g.getPhaseHandler().isPlayerTurn(me) && g.getPhaseHandler().getPhase() == PhaseType.END_OF_TURN;
                 if (!oppEnd) { ControlBrain.count("azoriushold_held"); return null; }
             }

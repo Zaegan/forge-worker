@@ -114,6 +114,13 @@ public class ProwessBrain {
     /** prowessplan2 (2026-10-23, from the agent games vs the meta Izzet Prowess list): prowessplan, plus Unsummon on a
      *  blocker and Wild Ride (+3/+0 on one attacker) in the lethal search */
     static boolean V2(Player me) { return AiTweaks.on("prowessplan2", me); }
+    /** prowesslethal2@NAME (P16, scans pl-s11 + pg-s11, 2026-11-02: lethal missed in 4 of 20 losses): the lethal search
+     *  also counts Secret Identity's Reveal (target attacker: base 3/4, flying) and one more mana from an untapped land
+     *  drop in hand (Steam Vents is then paid: MetaBrain.payShrine) */
+    static boolean L2(Player me) { return AiTweaks.on("prowesslethal2", me); }
+    static final String SECRET = "Secret Identity";
+    /** the attacker our planned Secret Identity reveals (AiTweaks.chooseModeForAbility), and the turn we pay Steam Vents */
+    static Card revealFor; static int ventsTurn = -1; static Game ventsGame;
     static final String UNSUMMON = "Unsummon", WILDRIDE = "Wild Ride";
 
     static Game deckGame; static Player deckFor; static boolean deckIs;
@@ -178,7 +185,7 @@ public class ProwessBrain {
 
     /** one castable spell of ours that the search may use */
     static class Sp {
-        SpellAbility sa; int cost; int dmg; boolean face, creature; int pump;   // pump: +power on one of our attackers
+        SpellAbility sa; int cost; int dmg; boolean face, creature; int pump; boolean reveal;   // pump: +power on one of our attackers; reveal: Secret Identity
         String name() { return sa.getHostCard().getName(); }
     }
 
@@ -201,6 +208,7 @@ public class ProwessBrain {
             else if (n.equals(SEAR)) { s.dmg = 4; s.creature = true; }
             else if (V2(me) && n.equals(UNSUMMON)) { s.dmg = 99; s.creature = true; }   // bounces any blocker
             else if (V2(me) && n.equals(WILDRIDE)) { s.pump = 3; }
+            else if (L2(me) && n.equals(SECRET)) { s.reveal = true; }
             else if (AiTweaks.targets(sa)) continue;   // other targeted spells (Spell Pierce, Heroes' Hangout): not in the search
             out.add(s);
         }
@@ -230,6 +238,10 @@ public class ProwessBrain {
     }
 
     static long damage(Player me, List<Card> attackers, List<Card> blockers, int k, int burnFace, int crabTaps, long[] extra) {
+        return damage(me, attackers, blockers, k, burnFace, crabTaps, extra, new boolean[attackers.size()]);
+    }
+
+    static long damage(Player me, List<Card> attackers, List<Card> blockers, int k, int burnFace, int crabTaps, long[] extra, boolean[] fly) {
         List<long[]> att = new ArrayList<>();   // [index, power]
         for (int i = 0; i < attackers.size(); i++)
             att.add(new long[]{i, Math.max(0, attackers.get(i).getNetPower() + (long) k * perSpell(attackers.get(i)) + extra[i])});
@@ -246,8 +258,9 @@ public class ProwessBrain {
         for (long[] a : att) {
             Card c = attackers.get((int) a[0]);
             boolean blocked = false;
+            boolean air = fly[(int) a[0]];
             for (int j = 0; j < bl.size() && !blocked; j++)
-                if (!used[j] && canBlock(c, a[1], bl.get(j))) { used[j] = true; blocked = true; }
+                if (!used[j] && canBlock(c, a[1], bl.get(j)) && (!air || bl.get(j).hasKeyword(Keyword.FLYING) || bl.get(j).hasKeyword(Keyword.REACH))) { used[j] = true; blocked = true; }
             if (!blocked) dmg += a[1];
         }
         return dmg + (long) k * pingPerSpell(me) + burnFace;
@@ -259,14 +272,26 @@ public class ProwessBrain {
         return n;
     }
 
-    static Line lethal(Player me, Player op) {
+    static Line lethal(Player me, Player op) { return lethal(me, op, 0); }
+
+    /** P16: an untapped land we could play now that enters untapped (null: none) */
+    static SpellAbility landDrop(Player me) {
+        for (Card c : me.getCardsIn(ZoneType.Hand)) {
+            if (!c.isLand() || !LandColour.untappedEntry(c, me)) continue;
+            for (SpellAbility sa : c.getAllPossibleAbilities(me, true))
+                if (sa.isLandAbility() && sa.canPlay() && me.canPlayLand(c, false, sa)) return sa;
+        }
+        return null;
+    }
+
+    static Line lethal(Player me, Player op, int bonus) {
         List<Card> attackers = new ArrayList<>();
         for (Card c : me.getCreaturesInPlay()) if (canAttackNow(c)) attackers.add(c);
         List<Card> blockers = new ArrayList<>();
         for (Card c : op.getCreaturesInPlay()) if (c.isUntapped()) blockers.add(c);
         List<Sp> sp = spells(me);
         if (sp.size() > 7) sp = sp.subList(0, 7);
-        int mana = mana(me), life = op.getLife(), gy = gyInstSorc(me);
+        int mana = mana(me) + bonus, life = op.getLife(), gy = gyInstSorc(me);
         SpellAbility crab = crabSa(me);
         Line best = null;
         for (int mask = 0; mask < (1 << sp.size()); mask++) {
@@ -290,16 +315,22 @@ public class ProwessBrain {
                         else left.remove((Card) tg.get(i));
                     }
                     List<Sp> pumps = new ArrayList<>();
-                    for (Sp s : set) if (s.pump > 0) pumps.add(s);
+                    for (Sp s : set) if (s.pump > 0 || s.reveal) pumps.add(s);
                     if (!pumps.isEmpty() && attackers.isEmpty()) continue;
                     int combos = 1;
                     for (int q = 0; q < pumps.size(); q++) combos *= attackers.size();
                     long dmg = -1; int bestCombo = 0;
                     for (int cmb = 0; cmb < Math.min(combos, 500); cmb++) {
                         long[] extra = new long[attackers.size()];
+                        boolean[] fly = new boolean[attackers.size()];
                         int r = cmb;
-                        for (Sp s : pumps) { extra[r % attackers.size()] += s.pump; r /= attackers.size(); }
-                        long d = damage(me, attackers, left, set.size(), face, crabUse * 2, extra);
+                        for (Sp s : pumps) {
+                            int i = r % attackers.size();
+                            if (s.reveal) { extra[i] += Math.max(0, 3 - attackers.get(i).getCurrentPower()); fly[i] = true; }
+                            else extra[i] += s.pump;
+                            r /= attackers.size();
+                        }
+                        long d = damage(me, attackers, left, set.size(), face, crabUse * 2, extra, fly);
                         if (d > dmg) { dmg = d; bestCombo = cmb; }
                     }
                     if (dmg < life) continue;
@@ -311,7 +342,7 @@ public class ProwessBrain {
                         int r = bestCombo;
                         for (Sp s : set) {
                             if (s.dmg > 0) best.targets.add(tg.get(bi++));
-                            else if (s.pump > 0) { best.targets.add(attackers.get(r % attackers.size())); r /= attackers.size(); }
+                            else if (s.pump > 0 || s.reveal) { best.targets.add(attackers.get(r % attackers.size())); r /= attackers.size(); }
                             else best.targets.add(null);
                         }
                     }
@@ -366,6 +397,14 @@ public class ProwessBrain {
         }
         if (ph != PhaseType.MAIN1) return null;
         Line l = lethal(me, op);
+        if (l == null && L2(me)) {   // P16: one more mana from the land drop makes it lethal: play that land first
+            SpellAbility land = landDrop(me);
+            if (land != null && lethal(me, op, 1) != null) {
+                ventsTurn = g.getPhaseHandler().getTurn(); ventsGame = g;
+                ControlBrain.count("prowesslethal2_land");
+                return land;
+            }
+        }
         if (l == null) {
             if (ProwessPlan.tier(me) > 0) return guard("prowessdmg", () -> ProwessPlan.main1(me, op));   // P14
             if (P12(me)) guard("prowessattack", () -> { evasiveAttack(me, op); return null; });
@@ -391,6 +430,7 @@ public class ProwessBrain {
         }
         if (next != null) {
             ControlBrain.count("prowessplan_lethal_spell");
+            if (next.reveal) { revealFor = (Card) nt; ControlBrain.count("prowesslethal2_reveal"); return next.sa; }
             if (nt != null) { next.sa.resetTargets(); next.sa.getTargets().add(nt); }
             return next.sa;
         }

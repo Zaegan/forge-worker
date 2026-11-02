@@ -18,7 +18,11 @@ import java.util.List;
  * (Multiversal Passage), adds nothing; shock lands count as untapped.
  */
 public class LandColour {
-    static boolean on(Player p) { return AiTweaks.on("landcolour", p); }
+    static boolean on(Player p) { return AiTweaks.on("landcolour", p) || all(p); }
+    /** landcast@NAME (P6/A13a, scans pg-s11, al2-s11, 2026-11-02: Great Hall or a colourless land where a coloured one
+     *  cast the 1-2 drop in hand; Island over Passage-as-Plains): the same swap, counting every nonland card of the hand
+     *  castable this turn (on our turn), then the instants as landcolour does, as the tie-break */
+    static boolean all(Player p) { return AiTweaks.on("landcast", p); }
 
     static final String SHOCKS = "Steam Vents|Godless Shrine|Watery Grave|Hallowed Fountain|Sacred Foundry|Breeding Pool|Temple Garden|Stomping Ground|Blood Crypt|Overgrown Tomb";
 
@@ -62,7 +66,9 @@ public class LandColour {
     }
 
     /** how many of the hand's instants and flash spells (each card once) the untapped lands after playing DROP pay for */
-    static int castable(Player me, Card drop) {
+    static int castable(Player me, Card drop) { return castable(me, drop, false); }
+
+    static int castable(Player me, Card drop, boolean all) {
         List<Card> lands = new ArrayList<>();
         for (Card c : me.getCardsIn(ZoneType.Battlefield)) if (c.isLand()) lands.add(c);
         lands.add(drop);
@@ -71,7 +77,7 @@ public class LandColour {
             if (c == drop ? untappedEntry(c, me) : c.isUntapped()) src.add(colours(c, lands));
         int n = 0;
         for (Card c : me.getCardsIn(ZoneType.Hand)) {
-            if (c.isLand() || c == drop || !(c.isInstant() || c.hasKeyword(forge.game.keyword.Keyword.FLASH))) continue;
+            if (c.isLand() || c == drop || !all && !(c.isInstant() || c.hasKeyword(forge.game.keyword.Keyword.FLASH))) continue;
             for (SpellAbility sa : c.getSpells()) {
                 if (sa.getPayCosts() == null || sa.getPayCosts().getTotalMana() == null) continue;
                 forge.card.mana.ManaCost mc = sa.getPayCosts().getTotalMana();
@@ -93,20 +99,27 @@ public class LandColour {
         Card mine = pick.getHostCard();
         if (!pick.isLandAbility() || mine == null || !me.getGame().getPhaseHandler().isPlayerTurn(me)) return ai;
         try {
-            int base = castable(me, mine), best = base;
+            boolean all = all(me);
+            String tag = all ? "landcast" : "landcolour";
+            int base = score(me, mine, all), best = base;
             Card alt = null;
             for (Card c : me.getCardsIn(ZoneType.Hand)) {
                 if (c == mine || !c.isLand() || c.getName().equals(mine.getName())) continue;
-                int k = castable(me, c);
+                int k = score(me, c, all);
                 if (k > best) { best = k; alt = c; }
             }
-            if (alt == null) { ControlBrain.count(base > 0 ? "landcolour_kept" : "landcolour_none"); return ai; }
+            if (alt == null) { ControlBrain.count(tag + (base > 0 ? "_kept" : "_none")); return ai; }
             for (SpellAbility sa : alt.getAllPossibleAbilities(me, true))
                 if (sa.isLandAbility() && sa.canPlay() && me.canPlayLand(alt, false, sa)) {
-                    ControlBrain.count("landcolour_swap");
+                    ControlBrain.count(tag + "_swap");
                     return List.of(sa);
                 }
         } catch (RuntimeException e) { ControlBrain.count("landcolour_error_" + e.getClass().getSimpleName()); }
         return ai;
+    }
+
+    /** landcolour: instants castable; landcast: every card castable this turn first, instants as the tie-break */
+    static int score(Player me, Card drop, boolean all) {
+        return all ? 100 * castable(me, drop, true) + castable(me, drop, false) : castable(me, drop, false);
     }
 }

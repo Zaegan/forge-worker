@@ -280,6 +280,10 @@ public class AiTweaks {
                 SpellAbility sb = SpellBrain.choose(getPlayer());
                 if (sb != null) return by("spellplan", sb);
             }
+            if (MetaBrain2.any(getPlayer())) {
+                SpellAbility m2 = MetaBrain2.choose(getPlayer());
+                if (m2 != null) return by("metaplan2", m2);
+            }
             if (FetchBrain.ON(getPlayer())) {
                 SpellAbility fb = FetchBrain.choose(getPlayer());
                 if (fb != null) return by("fetchplay", fb);
@@ -332,6 +336,7 @@ public class AiTweaks {
             ai = post("prowessplan", ai, ProwessBrain.ON(getPlayer()) ? ProwessBrain.post(getPlayer(), ai) : ai);
             ai = post("spellplan", ai, SpellBrain.any(getPlayer()) ? SpellBrain.post(getPlayer(), ai) : ai);
             ai = post("metaplan", ai, MetaBrain.any(getPlayer()) ? MetaBrain.post(getPlayer(), ai) : ai);
+            ai = post("metaplan2", ai, MetaBrain2.any(getPlayer()) ? MetaBrain2.post(getPlayer(), ai) : ai);
             ai = post("azplan", ai, AzoriusPlan.any(getPlayer()) ? AzoriusPlan.post(getAi(), getPlayer(), ai) : ai);
             ai = post("landorder", ai, LandOrder.on(getPlayer()) ? LandOrder.post(getPlayer(), ai) : ai);
             ai = post("landcolour", ai, LandColour.on(getPlayer()) ? LandColour.post(getPlayer(), ai) : ai);
@@ -446,6 +451,8 @@ public class AiTweaks {
             if (ProwessBrain.ON(getPlayer())) ProwessBrain.forceAttack(getPlayer(), combat);
             if (SpellBrain.on4(getPlayer())) SpellBrain.forceAttack(getPlayer(), combat);
             if (MetaBrain.d2(getPlayer())) MetaBrain.forceAttack(getPlayer(), combat);
+            if (on("freeattack", getPlayer())) MetaBrain2.freeAttack(getPlayer(), combat);   // B5b/S8 (MetaBrain2)
+            if (on("smaugattack", getPlayer())) MetaBrain2.smaug(getPlayer(), combat);       // B5c
             if (LandfallBrain.v3On(getPlayer())) LandfallBrain.attack3(getPlayer(), combat);
             if (LandfallBrain.f2(getPlayer())) LandfallBrain.lethalAttack(getPlayer(), combat);
             if (on("landseq10", getPlayer())) LandfallBrain.ouroAttack(getPlayer(), combat);
@@ -461,6 +468,7 @@ public class AiTweaks {
                     || on("landseq13", getPlayer()) || on("landseq14", getPlayer()) || on("landseq15", getPlayer())
                     || on("landseq16", getPlayer())) LandfallBrain.fixBlocks(getPlayer(), combat);
             if (ProwessBrain.P15(getPlayer())) ProwessBrain.noBlock(getPlayer(), combat);
+            if (on("chumplethal", getPlayer())) MetaBrain2.chump(getPlayer(), combat);   // D8b/G6/A9 (MetaBrain2)
             if (on("lftrace", getPlayer()) || on("spelltrace", getPlayer())) LandfallBrain.traceCombat(getPlayer(), "BLOCK", combat);
         }
 
@@ -477,6 +485,46 @@ public class AiTweaks {
                         .append(" -> ").append(r ? "pay" : "decline").append("\n");
             }
             return r;
+        }
+
+        @Override
+        public List<forge.game.spellability.OptionalCostValue> chooseOptionalCosts(SpellAbility chosen,
+                                                                                   List<forge.game.spellability.OptionalCostValue> optionalCostValues) {
+            List<forge.game.spellability.OptionalCostValue> r = super.chooseOptionalCosts(chosen, optionalCostValues);
+            return on("hexblight", getPlayer()) ? MetaBrain2.blight(getPlayer(), r) : r;   // D8a (MetaBrain2)
+        }
+
+        @Override
+        public int chooseNumber(SpellAbility sa, String title, List<Integer> values, Player relatedPlayer) {
+            if (on("prowessharm", getPlayer())) {   // P16c (MetaBrain2): Wild Ride's harmonize tap
+                Integer x = MetaBrain2.harmonize(getPlayer(), sa, title, values);
+                if (x != null) return x;
+            }
+            return super.chooseNumber(sa, title, values, relatedPlayer);
+        }
+
+        @Override
+        public List<forge.game.spellability.AbilitySub> chooseModeForAbility(SpellAbility sa, List<forge.game.spellability.AbilitySub> possible,
+                                                                           int min, int num, boolean allowRepeat) {
+            Card h = sa == null ? null : sa.getHostCard();
+            if (ProwessBrain.revealFor != null && h != null && h.getName().equals(ProwessBrain.SECRET) && ProwessBrain.L2(getPlayer()))
+                for (forge.game.spellability.AbilitySub m : possible)
+                    if (m.getDescription() != null && m.getDescription().startsWith("Reveal")) {
+                        ControlBrain.count("prowesslethal2_reveal_mode");
+                        return new java.util.ArrayList<>(List.of(m));
+                    }
+            return super.chooseModeForAbility(sa, possible, min, num, allowRepeat);
+        }
+
+        @Override
+        public boolean chooseTargetsFor(SpellAbility sa) {
+            Card h = sa == null ? null : sa.getHostCard();
+            Card t = ProwessBrain.revealFor;
+            if (t != null && h != null && h.getName().equals(ProwessBrain.SECRET) && ProwessBrain.L2(getPlayer()) && sa.usesTargeting()) {
+                ProwessBrain.revealFor = null;
+                if (sa.canTarget(t)) { sa.resetTargets(); sa.getTargets().add(t); ControlBrain.count("prowesslethal2_reveal_target"); return true; }
+            }
+            return super.chooseTargetsFor(sa);
         }
 
         @Override
