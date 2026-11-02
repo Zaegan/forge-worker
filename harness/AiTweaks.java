@@ -511,6 +511,8 @@ public class AiTweaks {
                 for (forge.game.spellability.AbilitySub m : possible)
                     if (m.getDescription() != null && m.getDescription().startsWith("Reveal")) {
                         ControlBrain.count("prowesslethal2_reveal_mode");
+                        Card t = ProwessBrain.revealFor;
+                        if (m.usesTargeting() && m.canTarget(t)) { m.resetTargets(); m.getTargets().add(t); ControlBrain.count("prowesslethal2_reveal_target"); }
                         return new java.util.ArrayList<>(List.of(m));
                     }
             return super.chooseModeForAbility(sa, possible, min, num, allowRepeat);

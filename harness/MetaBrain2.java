@@ -52,6 +52,10 @@ import java.util.List;
  * Boros Dragons (ab-s10):
  *   smaugattack@NAME  B5c  Smaug the Magnificent attacks when his Treasure trigger alone is lethal
  *   dragontutor2@NAME B5d  B3 (dragontutor) also counts a creature castable from exile (warped Nova Hellkite)
+ *   dragonshock@NAME  B6a  (MetaBrain.payShrine) Sacred Foundry / Multiversal Passage untapped for 2 life on our turn
+ *                     when one more mana casts a card in hand, at 6+ life (bl-s11: declined 6 times in 4 games)
+ *   dragonprecombat@NAME B6b main 1, Forge would go to combat: cast a castable Dragon first (bl-s11: 3 Dragons cast
+ *                     after combat, so Sarkhan / Momo attacked without the boost)
  * Izzet Prowess (pl-s11, pg-s11):
  *   prowesssorc@NAME  P10b main 1, no lethal line: sorcery cantrips before combat when a per-spell creature of ours
  *                     can attack (P10 needed an unblockable one; 10 sorceries were cast after combat in 20 losses)
@@ -85,7 +89,7 @@ public class MetaBrain2 {
 
     static boolean any(Player p) {
         for (String r : new String[]{"manlandsafe", "undervoice", "kaitoafter", "mapfirst", "azvoice", "starcagesafe", "azerode",
-                "azstabilise", "azreserve2", "azcopy", "azdemo", "dragontutor2", "prowesssorc"})
+                "azstabilise", "azreserve2", "azcopy", "azdemo", "dragontutor2", "prowesssorc", "dragonprecombat"})
             if (on(r, p)) return true;
         return false;
     }
@@ -206,6 +210,11 @@ public class MetaBrain2 {
                 inst.removeIf(sa -> sa.getApi() == ApiType.Counter || MetaBrain.hasMode(sa, ApiType.Counter) && !MetaBrain.hasMode(sa, ApiType.Draw));
                 inst.sort((x, y) -> Integer.compare(MetaBrain.cost(y), MetaBrain.cost(x)));
                 if (!inst.isEmpty()) { ControlBrain.count("undervoice_cast"); return List.of(inst.get(0)); }
+            }
+            if (on("dragonprecombat", me) && ours && ph == PhaseType.MAIN1 && g.getStack().isEmpty()) {
+                List<SpellAbility> dr = MetaBrain.castableHand(me, c -> c.isCreature() && c.getType().hasCreatureType("Dragon"));
+                dr.sort((x, y) -> Integer.compare(MetaBrain.cost(y), MetaBrain.cost(x)));
+                if (!dr.isEmpty()) { ControlBrain.count("dragonprecombat_cast"); return List.of(dr.get(0)); }
             }
             if (on("mapfirst", me) && ours && ph == PhaseType.MAIN1 && g.getStack().isEmpty()
                     && me.getCreaturesInPlay().stream().anyMatch(LandfallBrain::canAttackThisTurn)) {
