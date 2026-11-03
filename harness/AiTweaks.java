@@ -411,6 +411,7 @@ public class AiTweaks {
             }
             boolean play = super.playTrigger(host, wa, isMandatory);
             if (play && on("lordtarget", getPlayer())) lordRetarget(getPlayer(), wa);
+            if (play && on("stunbig", getPlayer())) MetaBrain2.stunBig(getPlayer(), wa);   // D9b (MetaBrain2)
             if (play && on("lfaudit", getPlayer())) LandfallBrain.auditTrigger(getPlayer(), wa);
             return play;
         }
@@ -453,6 +454,7 @@ public class AiTweaks {
             if (MetaBrain.d2(getPlayer())) MetaBrain.forceAttack(getPlayer(), combat);
             if (on("freeattack", getPlayer())) MetaBrain2.freeAttack(getPlayer(), combat);   // B5b/S8 (MetaBrain2)
             if (on("smaugattack", getPlayer())) MetaBrain2.smaug(getPlayer(), combat);       // B5c
+            if (on("keepblocker", getPlayer())) MetaBrain2.keepBlocker(getPlayer(), combat); // S13b
             if (LandfallBrain.v3On(getPlayer())) LandfallBrain.attack3(getPlayer(), combat);
             if (LandfallBrain.f2(getPlayer())) LandfallBrain.lethalAttack(getPlayer(), combat);
             if (on("landseq10", getPlayer())) LandfallBrain.ouroAttack(getPlayer(), combat);
@@ -516,6 +518,20 @@ public class AiTweaks {
                         return new java.util.ArrayList<>(List.of(m));
                     }
             return super.chooseModeForAbility(sa, possible, min, num, allowRepeat);
+        }
+
+        @Override
+        public org.apache.commons.lang3.tuple.ImmutablePair<forge.game.card.CardCollection, forge.game.card.CardCollection> arrangeForSurveil(
+                forge.game.card.CardCollection topN) {
+            org.apache.commons.lang3.tuple.ImmutablePair<forge.game.card.CardCollection, forge.game.card.CardCollection> r = super.arrangeForSurveil(topN);
+            return on("keephearth", getPlayer()) ? MetaBrain2.surveil(r) : r;   // S13c (MetaBrain2)
+        }
+
+        @Override
+        public forge.game.card.CardCollection chooseCardsToDiscardFrom(Player p, SpellAbility sa, forge.game.card.CardCollection validCards,
+                                                                      int min, int max, forge.game.card.CardCollectionView src) {
+            forge.game.card.CardCollection r = super.chooseCardsToDiscardFrom(p, sa, validCards, min, max, src);
+            return on("keephearth", getPlayer()) && p == getPlayer() ? MetaBrain2.discard(r, validCards) : r;   // S13c
         }
 
         @Override

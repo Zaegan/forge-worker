@@ -62,6 +62,24 @@ import java.util.List;
  *   prowessharm@NAME  P16c Wild Ride's harmonize taps a creature that is neither the spell's target nor able to attack
  *   prowesslethal2@NAME P16 (ProwessBrain) the lethal search also counts Secret Identity (Reveal: 3/4 flier) and an
  *                     untapped land drop from hand (Steam Vents paid)
+ * Round 3 (user 2026-11-02: "build out all hypotheses and test them"; scans dl2-s12, sl-s12, sb-s12):
+ *   holdcounter@NAME  D9a/S13a  on our turn, no spell (but a counter) that leaves us without the mana for the cheapest
+ *                     counterspell in hand, when we could cast it now and the opponent holds cards (not vs Cavern of Souls)
+ *   eotflash@NAME     D9a/S13a  the opponent's end step, Forge would pass: cast the costliest castable instant or flash
+ *                     card that is not a counter (the mana held up for counters is spent before our untap)
+ *   idlecantrip@NAME  S14a  Forge would pass in our main 2 (main 1 with no land in hand and no land played): cast a
+ *                     cantrip that targets nothing, when the counter mana held in hand stays up
+ *   stunbig@NAME      D9b  (playTrigger) Floodpits Drowner / The Wondrous Wasp target the opponent's biggest creature
+ *   noearthbent@NAME  D9c  no removal on the opponent's land creature (earthbent: it comes back): their best other
+ *                     creature instead, or nothing
+ *   keepblocker@NAME  S13b  after attacks are declared, when the attack is not lethal and the crack-back (their whole
+ *                     board, minus one attacker per creature left home) kills us: take attackers back, best blockers
+ *                     first, until it doesn't
+ *   elemfirst@NAME    S14e  Sunderflock in hand and not castable: cast an Elemental first when Sunderflock is then
+ *                     castable with the mana left (costs X less, X the greatest Elemental mana value)
+ *   keephearth@NAME   S13c  surveil and discard keep Hearth Elemental, Eddymurk Crab and Sunderflock (spare spells go)
+ *   spellshock2@NAME  S14b  (MetaBrain.payShrine) Steam Vents' 2 life only when one more mana casts a card in hand
+ *   (B7, Dragons' passivity, is smaugattack / dragonprecombat / spendmana in m2-BD.)
  * Only public information is used: the board, life totals and our own hand.
  */
 public class MetaBrain2 {
@@ -89,7 +107,8 @@ public class MetaBrain2 {
 
     static boolean any(Player p) {
         for (String r : new String[]{"manlandsafe", "undervoice", "kaitoafter", "mapfirst", "azvoice", "starcagesafe", "azerode",
-                "azstabilise", "azreserve2", "azcopy", "azdemo", "dragontutor2", "prowesssorc", "dragonprecombat"})
+                "azstabilise", "azreserve2", "azcopy", "azdemo", "dragontutor2", "prowesssorc", "dragonprecombat",
+                "holdcounter", "eotflash", "idlecantrip", "noearthbent", "elemfirst"})
             if (on(r, p)) return true;
         return false;
     }
@@ -103,6 +122,10 @@ public class MetaBrain2 {
         if (op == null) return null;
         if (on("azdemo", me)) { SpellAbility d = demo(me, op); if (d != null) return d; }
         if (!ourTurn(me)) return null;
+        if (on("elemfirst", me) && (phase(me) == PhaseType.MAIN1 || phase(me) == PhaseType.MAIN2)) {
+            SpellAbility e = elemFirst(me);
+            if (e != null) { ControlBrain.count("elemfirst_cast"); return e; }
+        }
         if (on("azvoice", me) && voiceOut(op) && (phase(me) == PhaseType.MAIN1 || phase(me) == PhaseType.MAIN2)) {
             SpellAbility v = answerVoice(me, op);
             if (v != null) { ControlBrain.count("azvoice_answer"); return v; }
@@ -211,6 +234,20 @@ public class MetaBrain2 {
                 inst.sort((x, y) -> Integer.compare(MetaBrain.cost(y), MetaBrain.cost(x)));
                 if (!inst.isEmpty()) { ControlBrain.count("undervoice_cast"); return List.of(inst.get(0)); }
             }
+            if (on("eotflash", me) && !ours && ph == PhaseType.END_OF_TURN && g.getStack().isEmpty()) {
+                List<SpellAbility> inst = MetaBrain.castableHand(me, c -> (c.isInstant() || c.hasKeyword(Keyword.FLASH)) && !c.isLand() && !isCounter(c));
+                inst.removeIf(AiTweaks::targets);
+                inst.sort((x, y) -> Integer.compare(MetaBrain.cost(y), MetaBrain.cost(x)));
+                if (!inst.isEmpty()) { ControlBrain.count("eotflash_cast"); return List.of(inst.get(0)); }
+            }
+            if (on("idlecantrip", me) && ours && g.getStack().isEmpty() && (ph == PhaseType.MAIN2 || ph == PhaseType.MAIN1
+                    && me.getLandsPlayedThisTurn() == 0 && me.getCardsIn(ZoneType.Hand).stream().noneMatch(Card::isLand))) {
+                int hold = counterCost(me);
+                for (SpellAbility sa : MetaBrain.castableHand(me, c -> (c.isInstant() || c.isSorcery()) && !isCounter(c)))
+                    if (!AiTweaks.targets(sa) && ProwessBrain.cantrip(sa) && (hold == 0 || openLands(me) - MetaBrain.cost(sa) >= hold)) {
+                        ControlBrain.count("idlecantrip_cast"); return List.of(sa);
+                    }
+            }
             if (on("dragonprecombat", me) && ours && ph == PhaseType.MAIN1 && g.getStack().isEmpty()) {
                 List<SpellAbility> dr = MetaBrain.castableHand(me, c -> c.isCreature() && c.getType().hasCreatureType("Dragon"));
                 dr.sort((x, y) -> Integer.compare(MetaBrain.cost(y), MetaBrain.cost(x)));
@@ -234,6 +271,24 @@ public class MetaBrain2 {
         Card h = pick.getHostCard();
         if (h == null) return ai;
         String n = h.getName();
+        if (on("holdcounter", me) && ours && pick.isSpell() && !h.isLand() && !isCounter(h) && !op.getCardsIn(ZoneType.Hand).isEmpty()
+                && op.getCardsIn(ZoneType.Battlefield).stream().noneMatch(c -> c.getName().equals("Cavern of Souls"))) {
+            int hold = counterCost(me);
+            if (hold > 0 && openLands(me) >= hold && openLands(me) - MetaBrain.cost(pick) < hold) { ControlBrain.count("holdcounter_held"); return null; }
+        }
+        if (on("noearthbent", me) && pick.isSpell()) {
+            for (SpellAbility x = pick; x != null; x = x.getSubAbility()) {
+                if (x.getTargets() == null || !(x.getApi() == ApiType.Destroy || x.getApi() == ApiType.ChangeZone || x.getApi() == ApiType.DealDamage
+                        || x.getApi() == ApiType.PutCounter)) continue;
+                for (Card t : new ArrayList<>(x.getTargets().getTargetCards())) {
+                    if (t.getController() != op || !t.isLand() || !t.isCreature()) continue;
+                    Card alt = null;
+                    for (Card c : op.getCreaturesInPlay()) if (!c.isLand() && x.canTarget(c) && (alt == null || value(c) > value(alt))) alt = c;
+                    if (alt == null) { ControlBrain.count("noearthbent_held"); return null; }
+                    x.resetTargets(); x.getTargets().add(alt); ControlBrain.count("noearthbent_retarget");
+                }
+            }
+        }
         if (on("manlandsafe", me) && ours && MANLANDS.contains(n) && !pick.isManaAbility() && pick.getApi() == ApiType.Animate) {
             boolean timing = ph == PhaseType.MAIN1 || ph == PhaseType.COMBAT_BEGIN;
             int pw = n.equals("Restless Reef") ? 4 : n.equals("Soulstone Sanctuary") ? 3 : 2;
@@ -273,6 +328,94 @@ public class MetaBrain2 {
             if (counter && left < 2) { ControlBrain.count("azreserve2_held"); return null; }
         }
         return ai;
+    }
+
+    static boolean isCounter(Card c) {
+        String t = c.getOracleText();
+        return t != null && t.contains("Counter target");
+    }
+
+    /** the cheapest counterspell in our hand (0: none) */
+    static int counterCost(Player me) {
+        return me.getCardsIn(ZoneType.Hand).stream().filter(c -> !c.isLand() && isCounter(c)).mapToInt(Card::getCMC).min().orElse(0);
+    }
+
+    /** S14e: an Elemental that makes Sunderflock castable with the mana left */
+    static SpellAbility elemFirst(Player me) {
+        if (me.getCardsIn(ZoneType.Hand).stream().noneMatch(c -> c.getName().equals("Sunderflock"))) return null;
+        if (!MetaBrain.castableHand(me, c -> c.getName().equals("Sunderflock")).isEmpty()) return null;
+        int have = me.getCreaturesInPlay().stream().filter(c -> c.getType().hasCreatureType("Elemental")).mapToInt(Card::getCMC).max().orElse(0);
+        for (SpellAbility sa : MetaBrain.castableHand(me, c -> c.isCreature() && c.getType().hasCreatureType("Elemental") && !c.getName().equals("Sunderflock"))) {
+            int x = Math.max(have, sa.getHostCard().getCMC());
+            if (openLands(me) - MetaBrain.cost(sa) >= Math.max(2, 9 - x)) return sa;
+        }
+        return null;
+    }
+
+    /** D9b: a stun / ability-loss trigger aimed at the opponent's biggest creature */
+    static void stunBig(Player me, SpellAbility sa) {
+        Card h = sa.getHostCard();
+        if (h == null || !(h.getName().equals("Floodpits Drowner") || h.getName().equals("The Wondrous Wasp"))) return;
+        Player op = ProwessBrain.opponent(me);
+        if (op == null) return;
+        for (SpellAbility x = sa; x != null; x = x.getSubAbility()) {
+            if (!x.usesTargeting() || x.getTargets() == null) continue;
+            Card best = null;
+            for (Card c : op.getCreaturesInPlay())
+                if (x.canTarget(c) && (best == null || c.getNetPower() > best.getNetPower()
+                        || c.getNetPower() == best.getNetPower() && c.getNetToughness() > best.getNetToughness())) best = c;
+            if (best == null) continue;
+            List<Card> cur = new ArrayList<>(x.getTargets().getTargetCards());
+            if (cur.size() == 1 && cur.get(0) == best) { ControlBrain.count("stunbig_same"); continue; }
+            x.resetTargets(); x.getTargets().add(best); ControlBrain.count("stunbig_retarget");
+        }
+    }
+
+    /** S13b: keep blockers home when their crack-back would kill us */
+    static void keepBlocker(Player me, Combat combat) {
+        Player op = ProwessBrain.opponent(me);
+        if (op == null || combat.getAttackers().isEmpty()) return;
+        int ours = combat.getAttackers().stream().mapToInt(c -> Math.max(0, c.getNetCombatDamage())).sum();
+        if (ours >= op.getLife()) return;
+        List<Integer> pw = new ArrayList<>();
+        for (Card c : op.getCreaturesInPlay()) pw.add(Math.max(0, c.getNetCombatDamage()));
+        pw.sort(java.util.Collections.reverseOrder());
+        List<Card> att = new ArrayList<>(combat.getAttackers());
+        att.removeIf(c -> c.hasKeyword(Keyword.VIGILANCE));
+        att.sort((x, y) -> Integer.compare(y.getNetToughness(), x.getNetToughness()));
+        int home = (int) me.getCreaturesInPlay().stream().filter(c -> !combat.isAttacking(c) || c.hasKeyword(Keyword.VIGILANCE)).count();
+        java.util.function.IntUnaryOperator through = hm -> { int t = 0; for (int i = hm; i < pw.size(); i++) t += pw.get(i); return t; };
+        if (through.applyAsInt(home) < me.getLife()) return;
+        int k = 0;
+        while (k < att.size() && through.applyAsInt(home + k + 1) >= me.getLife()) k++;
+        if (k >= att.size()) { ControlBrain.count("keepblocker_hopeless"); return; }
+        for (int i = 0; i <= k; i++) { combat.removeFromCombat(att.get(i)); ControlBrain.count("keepblocker_home"); }
+    }
+
+    static final java.util.Set<String> KEEP = java.util.Set.of("Hearth Elemental", "Eddymurk Crab", "Sunderflock");
+
+    /** S13c: surveil keeps the key creatures on top */
+    static org.apache.commons.lang3.tuple.ImmutablePair<forge.game.card.CardCollection, forge.game.card.CardCollection> surveil(
+            org.apache.commons.lang3.tuple.ImmutablePair<forge.game.card.CardCollection, forge.game.card.CardCollection> r) {
+        if (r == null || r.right == null) return r;
+        forge.game.card.CardCollection top = r.left == null ? new forge.game.card.CardCollection() : new forge.game.card.CardCollection(r.left);
+        forge.game.card.CardCollection gy = new forge.game.card.CardCollection();
+        for (Card c : r.right) if (KEEP.contains(c.getName())) { top.add(0, c); ControlBrain.count("keephearth_surveil"); } else gy.add(c);
+        return org.apache.commons.lang3.tuple.ImmutablePair.of(top, gy);
+    }
+
+    /** S13c: a discard keeps the key creatures when another card can go */
+    static forge.game.card.CardCollection discard(forge.game.card.CardCollection chosen, forge.game.card.CardCollection valid) {
+        if (chosen == null) return null;
+        forge.game.card.CardCollection out = new forge.game.card.CardCollection(chosen);
+        for (Card c : chosen) {
+            if (!KEEP.contains(c.getName())) continue;
+            Card alt = null;
+            for (Card v : valid) if (!out.contains(v) && !KEEP.contains(v.getName()) && (alt == null || v.isLand())) alt = v;
+            if (alt == null) continue;
+            out.remove(c); out.add(alt); ControlBrain.count("keephearth_discard");
+        }
+        return out;
     }
 
     static boolean landfallOpp(Player op) {
