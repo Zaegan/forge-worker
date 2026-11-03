@@ -328,6 +328,8 @@ public class AiTweaks {
                 }
                 ai = has("leyline") ? LeylineBrain.post(getPlayer(), ai) : ai;
                 ai = ProwessBrain.ON(getPlayer()) ? ProwessBrain.post(getPlayer(), ai) : ai;
+                // round 4 (pc-s13, ac-s13): MetaBrain2's rules for a ControlBrain deck (4c's monkpump, wardpay, flashbackmana)
+                ai = post("metaplan2", ai, MetaBrain2.any(getPlayer()) ? MetaBrain2.post(getPlayer(), ai) : ai);
                 ai = post("landorder", ai, LandOrder.on(getPlayer()) ? LandOrder.post(getPlayer(), ai) : ai);
                 return spendIfIdle(getPlayer(), ai);
             }
