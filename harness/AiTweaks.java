@@ -411,7 +411,6 @@ public class AiTweaks {
             }
             boolean play = super.playTrigger(host, wa, isMandatory);
             if (play && on("lordtarget", getPlayer())) lordRetarget(getPlayer(), wa);
-            if (play && on("stunbig", getPlayer())) MetaBrain2.stunBig(getPlayer(), wa);   // D9b (MetaBrain2)
             if (play && on("lfaudit", getPlayer())) LandfallBrain.auditTrigger(getPlayer(), wa);
             return play;
         }
@@ -427,6 +426,18 @@ public class AiTweaks {
                 if (o != null) return o;
             }
             return super.orderSimultaneousSa(sas);
+        }
+
+        @Override
+        public void orderAndPlaySimultaneousSa(List<SpellAbility> sas) {
+            // D9b stunbig (MetaBrain2): mandatory ETB triggers get their targets here (prepareSingleSa), not in playTrigger;
+            // a Drowner/Wasp trigger is aimed by us and put on the stack directly, everything else goes through Forge one by one
+            if (!on("stunbig", getPlayer()) || sas.stream().noneMatch(MetaBrain2::stunKind)) { super.orderAndPlaySimultaneousSa(sas); return; }
+            for (SpellAbility sa : orderSimultaneousSa(sas)) {
+                if (MetaBrain2.stunKind(sa) && sa.isTrigger() && !sa.isCopied() && MetaBrain2.stunBig(getPlayer(), sa))
+                    forge.ai.ComputerUtil.playStack(sa, getPlayer(), getPlayer().getGame());
+                else super.orderAndPlaySimultaneousSa(new java.util.ArrayList<>(List.of(sa)));
+            }
         }
 
         @Override

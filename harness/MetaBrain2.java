@@ -352,23 +352,22 @@ public class MetaBrain2 {
         return null;
     }
 
-    /** D9b: a stun / ability-loss trigger aimed at the opponent's biggest creature */
-    static void stunBig(Player me, SpellAbility sa) {
-        Card h = sa.getHostCard();
-        if (h == null || !(h.getName().equals("Floodpits Drowner") || h.getName().equals("The Wondrous Wasp"))) return;
+    static boolean stunKind(SpellAbility sa) {
+        Card h = sa == null ? null : sa.getHostCard();
+        return h != null && (h.getName().equals("Floodpits Drowner") || h.getName().equals("The Wondrous Wasp")) && sa.usesTargeting();
+    }
+
+    /** D9b: a stun / ability-loss trigger aimed at the opponent's biggest creature (false: no legal target, Forge's way) */
+    static boolean stunBig(Player me, SpellAbility sa) {
         Player op = ProwessBrain.opponent(me);
-        if (op == null) return;
-        for (SpellAbility x = sa; x != null; x = x.getSubAbility()) {
-            if (!x.usesTargeting() || x.getTargets() == null) continue;
-            Card best = null;
-            for (Card c : op.getCreaturesInPlay())
-                if (x.canTarget(c) && (best == null || c.getNetPower() > best.getNetPower()
-                        || c.getNetPower() == best.getNetPower() && c.getNetToughness() > best.getNetToughness())) best = c;
-            if (best == null) continue;
-            List<Card> cur = new ArrayList<>(x.getTargets().getTargetCards());
-            if (cur.size() == 1 && cur.get(0) == best) { ControlBrain.count("stunbig_same"); continue; }
-            x.resetTargets(); x.getTargets().add(best); ControlBrain.count("stunbig_retarget");
-        }
+        if (op == null) return false;
+        Card best = null;
+        for (Card c : op.getCreaturesInPlay())
+            if (sa.canTarget(c) && (best == null || c.getNetPower() > best.getNetPower()
+                    || c.getNetPower() == best.getNetPower() && c.getNetToughness() > best.getNetToughness())) best = c;
+        if (best == null) return false;
+        sa.resetTargets(); sa.getTargets().add(best); ControlBrain.count("stunbig_target");
+        return true;
     }
 
     /** S13b: keep blockers home when their crack-back would kill us */
