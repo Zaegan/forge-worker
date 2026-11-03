@@ -333,7 +333,13 @@ public class AiTweaks {
             }
             List<SpellAbility> ai = aiChoose();
             ai = post("leyline", ai, has("leyline") ? LeylineBrain.post(getPlayer(), ai) : ai);
+            List<SpellAbility> preVeto = ai;
             ai = post("prowessplan", ai, ProwessBrain.ON(getPlayer()) ? ProwessBrain.post(getPlayer(), ai) : ai);
+            if (on("vetofall", getPlayer()) && preVeto != null && !preVeto.isEmpty() && (ai == null || ai.isEmpty())) {   // P19a (MetaBrain2)
+                SpellAbility f = MetaBrain2.vetoFall(getPlayer());
+                if (f != null) { ControlBrain.count("vetofall_cast"); ai = post("vetofall", ai, new java.util.ArrayList<>(List.of(f))); }
+                else ControlBrain.count("vetofall_none");
+            }
             ai = post("spellplan", ai, SpellBrain.any(getPlayer()) ? SpellBrain.post(getPlayer(), ai) : ai);
             ai = post("metaplan", ai, MetaBrain.any(getPlayer()) ? MetaBrain.post(getPlayer(), ai) : ai);
             ai = post("metaplan2", ai, MetaBrain2.any(getPlayer()) ? MetaBrain2.post(getPlayer(), ai) : ai);
@@ -517,9 +523,29 @@ public class AiTweaks {
         }
 
         @Override
+        public int chooseNumber(SpellAbility sa, String title, int min, int max) {
+            if (on("prowessharm", getPlayer()) && max >= min) {   // P16c fix: harmonize asks this form (GameActionUtil)
+                List<Integer> vals = new java.util.ArrayList<>();
+                for (int i = min; i <= max; i++) vals.add(i);
+                Integer x = MetaBrain2.harmonize(getPlayer(), sa, title, vals);
+                if (x != null) return x;
+            }
+            return super.chooseNumber(sa, title, min, max);
+        }
+
+        @Override
         public List<forge.game.spellability.AbilitySub> chooseModeForAbility(SpellAbility sa, List<forge.game.spellability.AbilitySub> possible,
                                                                            int min, int num, boolean allowRepeat) {
             Card h = sa == null ? null : sa.getHostCard();
+            if (MetaBrain2.concealFor != null && h != null && h.getName().equals(ProwessBrain.SECRET) && on("sidprotect", getPlayer())) {
+                Card t = MetaBrain2.concealFor;
+                MetaBrain2.concealFor = null;
+                for (forge.game.spellability.AbilitySub m : possible)
+                    if (m.getDescription() != null && m.getDescription().startsWith("Conceal") && m.canTarget(t)) {
+                        m.resetTargets(); m.getTargets().add(t); ControlBrain.count("sidprotect_conceal");
+                        return new java.util.ArrayList<>(List.of(m));
+                    }
+            }
             if (ProwessBrain.revealFor != null && h != null && h.getName().equals(ProwessBrain.SECRET) && ProwessBrain.L2(getPlayer()))
                 for (forge.game.spellability.AbilitySub m : possible)
                     if (m.getDescription() != null && m.getDescription().startsWith("Reveal")) {

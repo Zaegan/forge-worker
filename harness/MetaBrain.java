@@ -111,6 +111,11 @@ public class MetaBrain {
             ControlBrain.count("dragonshock" + (pay ? "_paid" : "_tapped"));
             return pay;
         }
+        if (AiTweaks.on("shockneed", me) && n.matches(LandColour.SHOCKS)) {   // ac-s13 (MetaBrain2): any shockland, only when the mana is used
+            boolean pay = me.getLife() >= 6 && spellFor(me, untapped(me) + 1);
+            ControlBrain.count("shockneed" + (pay ? "_paid" : "_tapped"));
+            return pay;
+        }
         if (AiTweaks.on("spellshock2", me) && n.equals("Steam Vents")) {   // S14b (MetaBrain2): only when the mana is used
             boolean pay = me.getLife() >= 6 && spellFor(me, untapped(me) + 1);
             ControlBrain.count("spellshock2" + (pay ? "_paid" : "_tapped"));

@@ -80,6 +80,29 @@ import java.util.List;
  *   keephearth@NAME   S13c  surveil and discard keep Hearth Elemental, Eddymurk Crab and Sunderflock (spare spells go)
  *   spellshock2@NAME  S14b  (MetaBrain.payShrine) Steam Vents' 2 life only when one more mana casts a card in hand
  *   (B7, Dragons' passivity, is smaugattack / dragonprecombat / spendmana in m2-BD.)
+ * Round 4 (user 2026-11-03: "build out all hypotheses and test them"; scans ps-s13, pc-s13, ac-s13):
+ *   vetofall@NAME     P19a  (AiTweaks) when prowessplan vetoes Forge's play, cast the costliest castable creature (not
+ *                     Eddymurk Crab) or non-targeting sorcery that doesn't dump the hand, instead of passing
+ *   hastefirst@NAME   P19b/P20b  our main 1: cast a castable haste creature before combat
+ *   sidprotect@NAME   P20a  the opponent's spell or ability on the stack targets a creature of ours: Secret Identity's
+ *                     Conceal (hexproof) on it
+ *   creaturefirst@NAME P20c  our main phase, Forge casts a noncreature spell while a per-spell creature (prowess,
+ *                     Slickshot Show-Off) is castable from hand: the creature first
+ *   prowessharm@NAME  (fix) Forge asks harmonize's tap with chooseNumber(sa, title, min, max), not the list form
+ *   hallsafe@NAME     P20e  no creature-land animation (Great Hall of the Biblioplex and the MANLANDS) on the opponent's
+ *                     turn except to block (their declare-attackers step)
+ *   monkpump@NAME     pc-s13 (4c seat)  our main 1, Forge would go to combat while a prowess creature of ours can
+ *                     attack: cast a castable non-targeting noncreature spell first (4c: Stock Up before the Monks attack).
+ *                     4c's pilot changes need the user's approval before adoption (2026-11-03)
+ *   nmlcounter@NAME   ac-s13 (A14a)  the opponent's spell (mana value 3+) on top of the stack and fewer than 3 of their
+ *                     lands untapped: No More Lies on it (it can't pay the 3)
+ *   flashwait@NAME    A14b  no flash creature (Wan Shi Tong) on our own turn: it waits for their end step (with eotflash)
+ *   fountainlate@NAME A14d  no Fountainport activation (Treasure, Fish, draw) on the opponent's turn before their end step
+ *   shockneed@NAME    ac-s13 (4c seat)  any shockland: 2 life only at 6+ life when one more mana casts a card in hand
+ *                     (MetaBrain.payShrine)
+ *   wardpay@NAME      ac-s13 (4c seat)  no targeted spell at a creature whose ward we can't pay with the mana left
+ *   flashbackmana@NAME ac-s13 (4c seat)  no Flashback unless the mana left recasts an instant or sorcery in our graveyard
+ *   (A14c, Emeritus's generic paid with W/U, needs a mana-payment hook: not instrumentable, like B5e.)
  * Only public information is used: the board, life totals and our own hand.
  */
 public class MetaBrain2 {
@@ -108,20 +131,37 @@ public class MetaBrain2 {
     static boolean any(Player p) {
         for (String r : new String[]{"manlandsafe", "undervoice", "kaitoafter", "mapfirst", "azvoice", "starcagesafe", "azerode",
                 "azstabilise", "azreserve2", "azcopy", "azdemo", "dragontutor2", "prowesssorc", "dragonprecombat",
-                "holdcounter", "eotflash", "idlecantrip", "noearthbent", "elemfirst"})
+                "holdcounter", "eotflash", "idlecantrip", "noearthbent", "elemfirst",
+                "hastefirst", "sidprotect", "creaturefirst", "hallsafe", "monkpump",
+                "nmlcounter", "flashwait", "fountainlate", "wardpay", "flashbackmana"})
             if (on(r, p)) return true;
         return false;
     }
 
     /* ---------------- choose: plays of our own, before Forge's AI ---------------- */
 
+    static Card concealFor = null;
+
     static SpellAbility choose(Player me) {
         Game g = me.getGame();
-        if (!g.getStack().isEmpty()) return null;
         Player op = ProwessBrain.opponent(me);
         if (op == null) return null;
+        if (on("sidprotect", me) && !g.getStack().isEmpty()) {
+            SpellAbility p = protect(me, op);
+            if (p != null) { ControlBrain.count("sidprotect_cast"); return p; }
+        }
+        if (on("nmlcounter", me) && !g.getStack().isEmpty()) {
+            SpellAbility c = nml(me, op);
+            if (c != null) { ControlBrain.count("nmlcounter_cast"); return c; }
+        }
+        if (!g.getStack().isEmpty()) return null;
         if (on("azdemo", me)) { SpellAbility d = demo(me, op); if (d != null) return d; }
         if (!ourTurn(me)) return null;
+        if (on("hastefirst", me) && phase(me) == PhaseType.MAIN1) {
+            List<SpellAbility> hs = MetaBrain.castableHand(me, c -> c.isCreature() && c.hasKeyword(Keyword.HASTE) && c.getNetPower() > 0);
+            hs.sort((x, y) -> Integer.compare(y.getHostCard().getNetPower(), x.getHostCard().getNetPower()));
+            if (!hs.isEmpty()) { ControlBrain.count("hastefirst_cast"); return hs.get(0); }
+        }
         if (on("elemfirst", me) && (phase(me) == PhaseType.MAIN1 || phase(me) == PhaseType.MAIN2)) {
             SpellAbility e = elemFirst(me);
             if (e != null) { ControlBrain.count("elemfirst_cast"); return e; }
@@ -248,6 +288,13 @@ public class MetaBrain2 {
                         ControlBrain.count("idlecantrip_cast"); return List.of(sa);
                     }
             }
+            if (on("monkpump", me) && ours && ph == PhaseType.MAIN1 && g.getStack().isEmpty()
+                    && me.getCreaturesInPlay().stream().anyMatch(c -> c.hasKeyword(Keyword.PROWESS) && LandfallBrain.canAttackThisTurn(c))) {
+                List<SpellAbility> sp = MetaBrain.castableHand(me, c -> !c.isCreature() && !c.isLand() && !isCounter(c));
+                sp.removeIf(AiTweaks::targets);
+                sp.sort((x, y) -> Integer.compare(MetaBrain.cost(y), MetaBrain.cost(x)));
+                if (!sp.isEmpty()) { ControlBrain.count("monkpump_cast"); return List.of(sp.get(0)); }
+            }
             if (on("dragonprecombat", me) && ours && ph == PhaseType.MAIN1 && g.getStack().isEmpty()) {
                 List<SpellAbility> dr = MetaBrain.castableHand(me, c -> c.isCreature() && c.getType().hasCreatureType("Dragon"));
                 dr.sort((x, y) -> Integer.compare(MetaBrain.cost(y), MetaBrain.cost(x)));
@@ -275,6 +322,33 @@ public class MetaBrain2 {
                 && op.getCardsIn(ZoneType.Battlefield).stream().noneMatch(c -> c.getName().equals("Cavern of Souls"))) {
             int hold = counterCost(me);
             if (hold > 0 && openLands(me) >= hold && openLands(me) - MetaBrain.cost(pick) < hold) { ControlBrain.count("holdcounter_held"); return null; }
+        }
+        if (on("flashwait", me) && ours && pick.isSpell() && h.isCreature() && h.hasKeyword(Keyword.FLASH)
+                && !op.getCardsIn(ZoneType.Hand).isEmpty()) { ControlBrain.count("flashwait_held"); return null; }
+        if (on("fountainlate", me) && !ours && n.equals("Fountainport") && !pick.isManaAbility() && ph != PhaseType.END_OF_TURN) {
+            ControlBrain.count("fountainlate_held"); return null;
+        }
+        if (on("flashbackmana", me) && pick.isSpell() && n.equals("Flashback")) {
+            int left = openLands(me) - MetaBrain.cost(pick);
+            boolean recast = me.getCardsIn(ZoneType.Graveyard).stream().anyMatch(c -> (c.isInstant() || c.isSorcery()) && c.getCMC() <= left);
+            if (!recast) { ControlBrain.count("flashbackmana_held"); return null; }
+        }
+        if (on("wardpay", me) && pick.isSpell()) {
+            int left = openLands(me) - MetaBrain.cost(pick);
+            for (SpellAbility x = pick; x != null; x = x.getSubAbility())
+                if (x.getTargets() != null)
+                    for (Card t : x.getTargets().getTargetCards())
+                        if (t.getController() == op && ward(t) > left) { ControlBrain.count("wardpay_held"); return null; }
+        }
+        if (on("hallsafe", me) && !ours && pick.getApi() == ApiType.Animate && !pick.isManaAbility()
+                && (MANLANDS.contains(n) || n.equals("Great Hall of the Biblioplex")) && ph != PhaseType.COMBAT_DECLARE_ATTACKERS) {
+            ControlBrain.count("hallsafe_held"); return null;
+        }
+        if (on("creaturefirst", me) && ours && pick.isSpell() && !h.isCreature() && !h.isLand()
+                && (ph == PhaseType.MAIN1 || ph == PhaseType.MAIN2) && g.getStack().isEmpty()) {
+            List<SpellAbility> cr = MetaBrain.castableHand(me, c -> c.isCreature() && ProwessBrain.perSpell(c) > 0 && c != h);
+            cr.sort((x, y) -> Integer.compare(ProwessBrain.perSpell(y.getHostCard()), ProwessBrain.perSpell(x.getHostCard())));
+            if (!cr.isEmpty()) { ControlBrain.count("creaturefirst_cast"); return List.of(cr.get(0)); }
         }
         if (on("noearthbent", me) && pick.isSpell()) {
             for (SpellAbility x = pick; x != null; x = x.getSubAbility()) {
@@ -328,6 +402,54 @@ public class MetaBrain2 {
             if (counter && left < 2) { ControlBrain.count("azreserve2_held"); return null; }
         }
         return ai;
+    }
+
+    /** the generic mana of a creature's Ward (0: none or a non-mana ward) */
+    static int ward(Card c) {
+        int w = 0;
+        for (forge.game.keyword.KeywordInterface k : c.getKeywords()) {
+            String t = k.getOriginal();
+            if (t == null || !t.startsWith("Ward")) continue;
+            java.util.regex.Matcher m = java.util.regex.Pattern.compile("\\{(\\d+)\\}").matcher(t);
+            if (m.find()) w = Math.max(w, Integer.parseInt(m.group(1)));
+        }
+        return w;
+    }
+
+    /** A14a: No More Lies on the opponent's spell (MV 3+) on top when they have fewer than 3 untapped lands */
+    static SpellAbility nml(Player me, Player op) {
+        SpellAbility top = me.getGame().getStack().peekAbility();
+        if (top == null || !top.isSpell() || top.getActivatingPlayer() != op || top.getHostCard() == null || top.getHostCard().getCMC() < 3) return null;
+        if (openLands(op) >= 3) return null;
+        for (SpellAbility sa : MetaBrain.castableHand(me, c -> c.getName().equals(NML))) {
+            if (!sa.canTarget(top)) continue;
+            sa.resetTargets(); sa.getTargets().add(top);
+            return sa;
+        }
+        return null;
+    }
+
+    /** P20a: Secret Identity (Conceal: hexproof) on our creature that the opponent's spell or ability on top targets */
+    static SpellAbility protect(Player me, Player op) {
+        SpellAbility top = me.getGame().getStack().peekAbility();
+        if (top == null || top.getActivatingPlayer() != op) return null;
+        Card mine = null;
+        for (SpellAbility x = top; x != null; x = x.getSubAbility())
+            if (x.getTargets() != null)
+                for (Card t : x.getTargets().getTargetCards()) if (t.getController() == me && t.isCreature()) mine = t;
+        if (mine == null || mine.hasKeyword(Keyword.HEXPROOF)) return null;
+        for (SpellAbility sa : MetaBrain.castableHand(me, c -> c.getName().equals(ProwessBrain.SECRET))) { concealFor = mine; return sa; }
+        return null;
+    }
+
+    /** P19a: instead of prowessplan's veto-pass, the costliest castable creature (not the held Crab) or a sorcery */
+    static SpellAbility vetoFall(Player me) {
+        if (!ourTurn(me) || !me.getGame().getStack().isEmpty() || !(phase(me) == PhaseType.MAIN1 || phase(me) == PhaseType.MAIN2)) return null;
+        List<SpellAbility> c = MetaBrain.castableHand(me, x -> x.isCreature() && !x.getName().equals("Eddymurk Crab")
+                || x.isSorcery());
+        c.removeIf(sa -> AiTweaks.targets(sa) || ProwessBrain.dumpsHand(me, sa));
+        c.sort((x, y) -> Integer.compare((y.getHostCard().isCreature() ? 100 : 0) + MetaBrain.cost(y), (x.getHostCard().isCreature() ? 100 : 0) + MetaBrain.cost(x)));
+        return c.isEmpty() ? null : c.get(0);
     }
 
     static boolean isCounter(Card c) {
