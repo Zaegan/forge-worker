@@ -68,6 +68,9 @@ public class ProwessBrain {
      *                            of a per-spell attacker
      *   prowessattack@NAME   P12 main 1: every per-spell attacker that no untapped opposing creature can block attacks,
      *                            unless the opponent's board could kill us next turn
+     *   prowessadv@NAME      P21a (pg2-s14) P10 also casts the adventure cantrips (Improvised Act, Stoke Genius)
+     *   prowesssafe@NAME     P21b (pg2-s14) P10 also counts an attacker whose every possible blocker dies to it (after
+     *                            one more spell) without killing it; Otter's evasion is judged at the pumped power
      *   prowessdmg1/2/3@NAME P14a-c the damage-turn planner (ProwessPlan), which replaces P10-P12 when on
      * Surplus mana = untapped lands less the mana value of the cheapest creature card in hand (cast that first). */
     static boolean P1(Player me) { return V3(me) || AiTweaks.on("prowessstoke", me); }
@@ -500,15 +503,48 @@ public class ProwessBrain {
         return null;
     }
 
+    /** prowessadv (pg2-s14): the adventure halves of our creature cards (Improvised Act, Stoke Genius), cost at most MANA */
+    static List<SpellAbility> adventures(Player me, int mana) {
+        CardCollection hand = new CardCollection();
+        for (Card c : me.getCardsIn(ZoneType.Hand)) if (c.isCreature()) hand.add(c);
+        List<SpellAbility> out = new ArrayList<>();
+        for (SpellAbility sa : ComputerUtilAbility.getSpellAbilities(hand, me)) {
+            if (!sa.isSpell() || !sa.isAdventure()) continue;
+            try { if (sa.getPayCosts().getTotalMana().getCMC() > mana) continue; } catch (Exception e) { continue; }
+            if (playable(me, sa) != null) out.add(sa);
+        }
+        return out;
+    }
+
+    /** prowesssafe (pg2-s14): after one more spell, every untapped creature of OP that could block A dies to it and
+     *  cannot kill it (no first strike or deathtouch) */
+    static boolean safe(Card a, Player op) {
+        if (perSpell(a) <= 0) return false;
+        long pw = a.getNetPower() + perSpell(a);
+        long tg = a.getNetToughness() - a.getDamage() + (a.hasKeyword(Keyword.PROWESS) ? triggers(a) : 0);
+        for (Card b : op.getCreaturesInPlay()) {
+            if (!b.isUntapped() || !canBlock(a, pw, b)) continue;
+            if (b.hasKeyword(Keyword.FIRST_STRIKE) || b.hasKeyword(Keyword.DOUBLE_STRIKE) || b.hasKeyword(Keyword.DEATHTOUCH)) return false;
+            if (b.getNetPower() >= tg || b.getNetToughness() - b.getDamage() > pw) return false;
+        }
+        return true;
+    }
+
     /** P10: main 1, sorcery cantrips and Wild Ride for a free per-spell attacker */
     static SpellAbility precombat(Player me, Player op) {
         List<Card> free = new ArrayList<>();
-        for (Card c : me.getCreaturesInPlay()) if (canAttackNow(c) && free(c, op)) free.add(c);
+        boolean safe = AiTweaks.on("prowesssafe", me), adv = AiTweaks.on("prowessadv", me);
+        for (Card c : me.getCreaturesInPlay()) if (canAttackNow(c) && (free(c, op) || safe && safe(c, op))) free.add(c);
         Card t = bestGrower(free);
         if (t == null) return null;
-        for (SpellAbility sa : castable(me, c -> c.isSorcery(), surplus(me))) {
+        List<SpellAbility> cands = castable(me, c -> c.isSorcery(), surplus(me));
+        if (adv) cands.addAll(adventures(me, surplus(me)));
+        for (SpellAbility sa : cands) {
             boolean ride = sa.getHostCard().getName().equals(WILDRIDE);
             if (!ride && (AiTweaks.targets(sa) || !cantrip(sa))) continue;
+            if (sa.isAdventure() && dumpsHand(me, sa)) continue;
+            if (sa.isAdventure()) ControlBrain.count("prowessadv_cast");
+            else if (!free(t, op)) ControlBrain.count("prowesssafe_cast");
             if (ride) {
                 if (!sa.canTarget(t)) continue;
                 sa.resetTargets(); sa.getTargets().add(t);

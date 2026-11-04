@@ -62,6 +62,11 @@ import java.util.List;
  *   prowessharm@NAME  P16c Wild Ride's harmonize taps a creature that is neither the spell's target nor able to attack
  *   prowesslethal2@NAME P16 (ProwessBrain) the lethal search also counts Secret Identity (Reveal: 3/4 flier) and an
  *                     untapped land drop from hand (Steam Vents paid)
+ * Round 5 (scan dml-s14, Dimir vs Landfall, 2026-11-04):
+ *   waspcombat@NAME   D10a The Wondrous Wasp is cast at the opponent's beginning of combat (its ETB taps an attacker
+ *                     before it can attack), not on our turn or earlier in theirs, while they have a possible attacker
+ *   tidehold@NAME     D10b while the opponent has a landfall creature, our own-turn spells leave the mana for Tishana's
+ *                     Tidebinder in hand (it stops the landfall trigger and strips the creature's abilities)
  * Round 3 (user 2026-11-02: "build out all hypotheses and test them"; scans dl2-s12, sl-s12, sb-s12):
  *   holdcounter@NAME  D9a/S13a  on our turn, no spell (but a counter) that leaves us without the mana for the cheapest
  *                     counterspell in hand, when we could cast it now and the opponent holds cards (not vs Cavern of Souls)
@@ -125,6 +130,23 @@ public class MetaBrain2 {
         return (int) p.getCardsIn(ZoneType.Battlefield).stream().filter(c -> c.isLand() && c.isUntapped()).count();
     }
 
+    static final String WASP = "The Wondrous Wasp", TIDEBINDER = "Tishana's Tidebinder";
+
+    /** an untapped creature of OP that can attack this turn (null if none) */
+    static Card attackerOf(Player op) {
+        for (Card c : op.getCreaturesInPlay()) if (c.isUntapped() && !c.hasSickness() && !c.hasKeyword(Keyword.DEFENDER)) return c;
+        return null;
+    }
+
+    /** OP controls a creature with a landfall ability (Harmonizer, Chocobo) */
+    static boolean landfallEngine(Player op) {
+        for (Card c : op.getCreaturesInPlay()) {
+            String t = c.getOracleText() == null ? "" : c.getOracleText().toLowerCase();
+            if (t.contains("landfall") || t.contains("whenever a land you control enters")) return true;
+        }
+        return false;
+    }
+
     static boolean ourTurn(Player me) { return me.getGame().getPhaseHandler().isPlayerTurn(me); }
     static PhaseType phase(Player me) { return me.getGame().getPhaseHandler().getPhase(); }
 
@@ -133,7 +155,7 @@ public class MetaBrain2 {
                 "azstabilise", "azreserve2", "azcopy", "azdemo", "dragontutor2", "prowesssorc", "dragonprecombat",
                 "holdcounter", "eotflash", "idlecantrip", "noearthbent", "elemfirst",
                 "hastefirst", "sidprotect", "creaturefirst", "hallsafe", "monkpump",
-                "nmlcounter", "flashwait", "fountainlate", "wardpay", "flashbackmana"})
+                "nmlcounter", "flashwait", "fountainlate", "wardpay", "flashbackmana", "waspcombat", "tidehold"})
             if (on(r, p)) return true;
         return false;
     }
@@ -274,6 +296,10 @@ public class MetaBrain2 {
                 inst.sort((x, y) -> Integer.compare(MetaBrain.cost(y), MetaBrain.cost(x)));
                 if (!inst.isEmpty()) { ControlBrain.count("undervoice_cast"); return List.of(inst.get(0)); }
             }
+            if (on("waspcombat", me) && !ours && ph == PhaseType.COMBAT_BEGIN && g.getStack().isEmpty() && attackerOf(op) != null) {
+                List<SpellAbility> w = MetaBrain.castableHand(me, c -> c.getName().equals(WASP));
+                if (!w.isEmpty()) { ControlBrain.count("waspcombat_cast"); return List.of(w.get(0)); }
+            }
             if (on("eotflash", me) && !ours && ph == PhaseType.END_OF_TURN && g.getStack().isEmpty()) {
                 List<SpellAbility> inst = MetaBrain.castableHand(me, c -> (c.isInstant() || c.hasKeyword(Keyword.FLASH)) && !c.isLand() && !isCounter(c));
                 inst.removeIf(AiTweaks::targets);
@@ -322,6 +348,15 @@ public class MetaBrain2 {
                 && op.getCardsIn(ZoneType.Battlefield).stream().noneMatch(c -> c.getName().equals("Cavern of Souls"))) {
             int hold = counterCost(me);
             if (hold > 0 && openLands(me) >= hold && openLands(me) - MetaBrain.cost(pick) < hold) { ControlBrain.count("holdcounter_held"); return null; }
+        }
+        if (on("waspcombat", me) && pick.isSpell() && n.equals(WASP)
+                && (ours || ph.isBefore(PhaseType.COMBAT_BEGIN)) && attackerOf(op) != null) {
+            ControlBrain.count("waspcombat_held"); return null;
+        }
+        if (on("tidehold", me) && ours && pick.isSpell() && !h.isLand() && !n.equals(TIDEBINDER) && landfallEngine(op)) {
+            List<SpellAbility> tb = MetaBrain.castableHand(me, c -> c.getName().equals(TIDEBINDER));
+            int hold = tb.isEmpty() ? 0 : MetaBrain.cost(tb.get(0));
+            if (hold > 0 && openLands(me) - MetaBrain.cost(pick) < hold) { ControlBrain.count("tidehold_held"); return null; }
         }
         if (on("flashwait", me) && ours && pick.isSpell() && h.isCreature() && h.hasKeyword(Keyword.FLASH)
                 && !op.getCardsIn(ZoneType.Hand).isEmpty()) { ControlBrain.count("flashwait_held"); return null; }
