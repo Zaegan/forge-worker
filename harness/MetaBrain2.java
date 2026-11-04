@@ -63,8 +63,9 @@ import java.util.List;
  *   prowesslethal2@NAME P16 (ProwessBrain) the lethal search also counts Secret Identity (Reveal: 3/4 flier) and an
  *                     untapped land drop from hand (Steam Vents paid)
  * Round 5 (scan dml-s14, Dimir vs Landfall, 2026-11-04):
- *   waspcombat@NAME   D10a The Wondrous Wasp is cast at the opponent's beginning of combat (its ETB taps an attacker
- *                     before it can attack), not on our turn or earlier in theirs, while they have a possible attacker
+ *   waspcombat@NAME   D10a The Wondrous Wasp is cast in the opponent's main 1 (when we get priority there, with the stack
+ *                     empty) so its ETB taps an attacker before combat, not on our turn or in their upkeep, while they
+ *                     have a possible attacker (Forge gives no priority at their beginning of combat: 0 casts in smoke)
  *   tidehold@NAME     D10b while the opponent has a landfall creature, our own-turn spells leave the mana for Tishana's
  *                     Tidebinder in hand (it stops the landfall trigger and strips the creature's abilities)
  * Round 3 (user 2026-11-02: "build out all hypotheses and test them"; scans dl2-s12, sl-s12, sb-s12):
@@ -296,7 +297,8 @@ public class MetaBrain2 {
                 inst.sort((x, y) -> Integer.compare(MetaBrain.cost(y), MetaBrain.cost(x)));
                 if (!inst.isEmpty()) { ControlBrain.count("undervoice_cast"); return List.of(inst.get(0)); }
             }
-            if (on("waspcombat", me) && !ours && ph == PhaseType.COMBAT_BEGIN && g.getStack().isEmpty() && attackerOf(op) != null) {
+            if (on("waspcombat", me) && !ours && (ph == PhaseType.MAIN1 || ph == PhaseType.COMBAT_BEGIN) && g.getStack().isEmpty()
+                    && attackerOf(op) != null) {   // Forge gives no priority at their beginning of combat: main 1 once they pass
                 List<SpellAbility> w = MetaBrain.castableHand(me, c -> c.getName().equals(WASP));
                 if (!w.isEmpty()) { ControlBrain.count("waspcombat_cast"); return List.of(w.get(0)); }
             }
@@ -350,7 +352,7 @@ public class MetaBrain2 {
             if (hold > 0 && openLands(me) >= hold && openLands(me) - MetaBrain.cost(pick) < hold) { ControlBrain.count("holdcounter_held"); return null; }
         }
         if (on("waspcombat", me) && pick.isSpell() && n.equals(WASP)
-                && (ours || ph.isBefore(PhaseType.COMBAT_BEGIN)) && attackerOf(op) != null) {
+                && (ours || ph.isBefore(PhaseType.MAIN1)) && attackerOf(op) != null) {
             ControlBrain.count("waspcombat_held"); return null;
         }
         if (on("tidehold", me) && ours && pick.isSpell() && !h.isLand() && !n.equals(TIDEBINDER) && landfallEngine(op)) {
