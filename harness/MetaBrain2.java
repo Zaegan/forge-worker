@@ -133,6 +133,22 @@ public class MetaBrain2 {
 
     static final String WASP = "The Wondrous Wasp", TIDEBINDER = "Tishana's Tidebinder";
 
+    /** diagnostics: why our Wasp is not castable (canPlay / canPayCost, untapped lands) */
+    static String waspWhy(Player me) {
+        for (Card c : me.getCardsIn(ZoneType.Hand)) {
+            if (!c.getName().equals(WASP)) continue;
+            for (SpellAbility sa : c.getSpellAbilities()) {
+                if (!sa.isSpell()) continue;
+                sa.setActivatingPlayer(me);
+                boolean cp = false, pay = false;
+                try { cp = sa.canPlay(); } catch (Exception e) { }
+                try { pay = forge.ai.ComputerUtilCost.canPayCost(sa, me, false); } catch (Exception e) { }
+                return "_" + (cp ? "play" : "noplay") + "_" + (pay ? "pay" : "nopay") + "_l" + Math.min(openLands(me), 3);
+            }
+        }
+        return "_nosa";
+    }
+
     /** an untapped creature of OP that can attack this turn (null if none) */
     static Card attackerOf(Player op) {
         for (Card c : op.getCreaturesInPlay()) if (c.isUntapped() && !c.hasSickness() && !c.hasKeyword(Keyword.DEFENDER)) return c;
@@ -292,7 +308,7 @@ public class MetaBrain2 {
         boolean pass = ai == null || ai.isEmpty();
         if (on("waspcombat", me) && !ours && me.getCardsIn(ZoneType.Hand).stream().anyMatch(c -> c.getName().equals(WASP)))
             ControlBrain.count("waspcombat_seen_" + ph + (g.getStack().isEmpty() ? "" : "_stack") + (pass ? "" : "_ai")
-                    + (MetaBrain.castableHand(me, c -> c.getName().equals(WASP)).isEmpty() ? "_nocast" : "")
+                    + (MetaBrain.castableHand(me, c -> c.getName().equals(WASP)).isEmpty() ? "_nocast" + waspWhy(me) : "")
                     + (attackerOf(op) == null ? "_noatt" : ""));
         if (pass) {
             if (on("undervoice", me) && ours && ph == PhaseType.MAIN2 && g.getStack().isEmpty() && voiceOut(op)) {
