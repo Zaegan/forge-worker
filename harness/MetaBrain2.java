@@ -65,7 +65,8 @@ import java.util.List;
  * Round 5 (scan dml-s14, Dimir vs Landfall, 2026-11-04):
  *   waspcombat@NAME   D10a The Wondrous Wasp is cast in the opponent's main 1 (when we get priority there, with the stack
  *                     empty) so its ETB taps an attacker before combat, not on our turn or in their upkeep, while they
- *                     have a possible attacker (Forge gives no priority at their beginning of combat: 0 casts in smoke)
+ *                     have a possible attacker; on our turn other spells keep Wasp's 2 mana open (smoke: Wasp was held
+ *                     but Dimir had 0-1 open lands on their turn, so it never came down)
  *   tidehold@NAME     D10b while the opponent has a landfall creature, our own-turn spells leave the mana for Tishana's
  *                     Tidebinder in hand (it stops the landfall trigger and strips the creature's abilities)
  * Round 3 (user 2026-11-02: "build out all hypotheses and test them"; scans dl2-s12, sl-s12, sb-s12):
@@ -374,6 +375,11 @@ public class MetaBrain2 {
         if (on("waspcombat", me) && pick.isSpell() && n.equals(WASP)
                 && (ours || ph.isBefore(PhaseType.MAIN1)) && attackerOf(op) != null) {
             ControlBrain.count("waspcombat_held"); return null;
+        }
+        if (on("waspcombat", me) && ours && pick.isSpell() && !h.isLand() && !n.equals(WASP)
+                && op.getCreaturesInPlay().stream().anyMatch(c -> !c.hasKeyword(Keyword.DEFENDER))) {
+            List<SpellAbility> w = MetaBrain.castableHand(me, c -> c.getName().equals(WASP));
+            if (!w.isEmpty() && openLands(me) - MetaBrain.cost(pick) < MetaBrain.cost(w.get(0))) { ControlBrain.count("waspcombat_mana"); return null; }
         }
         if (on("tidehold", me) && ours && pick.isSpell() && !h.isLand() && !n.equals(TIDEBINDER) && landfallEngine(op)) {
             List<SpellAbility> tb = MetaBrain.castableHand(me, c -> c.getName().equals(TIDEBINDER));
