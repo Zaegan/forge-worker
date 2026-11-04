@@ -290,6 +290,10 @@ public class MetaBrain2 {
         boolean ours = ourTurn(me);
         PhaseType ph = phase(me);
         boolean pass = ai == null || ai.isEmpty();
+        if (on("waspcombat", me) && !ours && me.getCardsIn(ZoneType.Hand).stream().anyMatch(c -> c.getName().equals(WASP)))
+            ControlBrain.count("waspcombat_seen_" + ph + (g.getStack().isEmpty() ? "" : "_stack") + (pass ? "" : "_ai")
+                    + (MetaBrain.castableHand(me, c -> c.getName().equals(WASP)).isEmpty() ? "_nocast" : "")
+                    + (attackerOf(op) == null ? "_noatt" : ""));
         if (pass) {
             if (on("undervoice", me) && ours && ph == PhaseType.MAIN2 && g.getStack().isEmpty() && voiceOut(op)) {
                 List<SpellAbility> inst = MetaBrain.castableHand(me, c -> (c.isInstant() || c.hasKeyword(Keyword.FLASH)) && !c.isLand());
