@@ -238,7 +238,9 @@ public class AiTweaks {
             src = "forge";
             if (LandfallBrain.f1(getPlayer()))
                 try { LandfallBrain.retargetStroke(getPlayer()); } catch (RuntimeException e) { ControlBrain.count("landtunnel_error_" + e.getClass().getSimpleName()); }
+            MetaBrain2.manaRelease(getPlayer());
             List<SpellAbility> r = choose0();
+            if (on("manasave", getPlayer()) && r != null && !r.isEmpty()) MetaBrain2.manaSave(getPlayer(), r.get(0));   // A14c/D8/B5e
             if (on("spelltrace", getPlayer())) LandfallBrain.trace2(getPlayer(), r, src);
             return r;
         }

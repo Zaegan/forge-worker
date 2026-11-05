@@ -1,3 +1,4 @@
+import forge.ai.AiCardMemory;
 import forge.game.Game;
 import forge.game.ability.ApiType;
 import forge.game.card.Card;
@@ -62,6 +63,10 @@ import java.util.List;
  *   prowessharm@NAME  P16c Wild Ride's harmonize taps a creature that is neither the spell's target nor able to attack
  *   prowesslethal2@NAME P16 (ProwessBrain) the lethal search also counts Secret Identity (Reveal: 3/4 flier) and an
  *                     untapped land drop from hand (Steam Vents paid)
+ * manasave@NAME     A14c / D8 / B5e  which lands pay a spell: those making colours the rest of the hand needs are
+ *                     held back (Forge's held-mana memory) while the spell stays payable, so the generic is paid from
+ *                     the rest; Cavern of Souls is kept for a creature (AiTweaks.chooseSpellAbilityToPlay, released at
+ *                     the next decision)
  * Round 5 (scan dml-s14, Dimir vs Landfall, 2026-11-04):
  *   waspcombat@NAME   D10a The Wondrous Wasp is cast in the opponent's main 1 (when we get priority there, with the stack
  *                     empty) so its ETB taps an attacker before combat, not on our turn or in their upkeep, while they
@@ -134,6 +139,59 @@ public class MetaBrain2 {
 
     static final String WASP = "The Wondrous Wasp", TIDEBINDER = "Tishana's Tidebinder";
 
+    /* ---------------- manasave: which lands pay (A14c, D8, B5e) ---------------- */
+
+    static final java.util.Map<Player, List<Card>> saved = new java.util.HashMap<>();
+
+    /** our spell SA is about to be paid: lands making colours the rest of our hand needs (and Cavern of Souls, for a
+     *  non-creature spell while a creature is in hand) go into Forge's held-mana memory, which its payment code skips,
+     *  one at a time while SA stays payable; most-needed colours first, so the generic part is paid from the rest */
+    static void manaSave(Player me, SpellAbility sa) {
+        if (sa == null || !sa.isSpell() || sa.isManaAbility() || sa.getHostCard() == null || sa.getPayCosts() == null) return;
+        forge.card.mana.ManaCost cost;
+        try { cost = sa.getPayCosts().getTotalMana(); } catch (Exception e) { return; }
+        if (cost == null || cost.countX() > 0 || cost.getGenericCost() == 0) return;
+        Card host = sa.getHostCard();
+        java.util.Map<Character, Integer> need = new java.util.HashMap<>();
+        boolean creatureInHand = false;
+        int lands = openLands(me);
+        for (Card c : me.getCardsIn(ZoneType.Hand)) {
+            if (c == host || c.isLand()) continue;
+            if (c.isCreature()) creatureInHand = true;
+            if (c.getCMC() > lands) continue;
+            for (char x : c.getManaCost().getShortString().toCharArray()) if ("WUBRG".indexOf(x) >= 0) need.merge(x, 1, Integer::sum);
+        }
+        List<Card> cand = new ArrayList<>();
+        java.util.Map<Card, Integer> score = new java.util.HashMap<>();
+        for (Card l : ManaHold.untappedLands(me)) {
+            if (AiCardMemory.isRememberedCard(me, l, AiCardMemory.MemorySet.HELD_MANA_SOURCES_FOR_ENEMY_DECLBLK)) continue;
+            int v = 0;
+            for (char x : LandOrder.colours(l).toCharArray()) v += need.getOrDefault(x, 0);
+            if (l.getName().equals("Cavern of Souls") && !host.isCreature() && creatureInHand) v += 100;
+            if (v > 0) { cand.add(l); score.put(l, v); }
+        }
+        if (cand.isEmpty()) return;
+        cand.sort((x, y) -> Integer.compare(score.get(y), score.get(x)));
+        List<Card> held = new ArrayList<>();
+        for (Card l : cand) {
+            AiCardMemory.rememberCard(me, l, AiCardMemory.MemorySet.HELD_MANA_SOURCES_FOR_ENEMY_DECLBLK);
+            boolean ok;
+            try { ok = forge.ai.ComputerUtilMana.canPayManaCost(new forge.game.mana.ManaCostBeingPaid(cost), sa, me, false); }
+            catch (Exception e) { ok = false; }
+            if (ok) held.add(l);
+            else AiCardMemory.forgetCard(me, l, AiCardMemory.MemorySet.HELD_MANA_SOURCES_FOR_ENEMY_DECLBLK);
+        }
+        if (held.isEmpty()) { ControlBrain.count("manasave_none"); return; }
+        saved.put(me, held);
+        ControlBrain.count("manasave_held");
+    }
+
+    /** at our next decision: the lands manaSave held go back to Forge */
+    static void manaRelease(Player me) {
+        List<Card> held = saved.remove(me);
+        if (held != null) for (Card l : held) AiCardMemory.forgetCard(me, l, AiCardMemory.MemorySet.HELD_MANA_SOURCES_FOR_ENEMY_DECLBLK);
+    }
+
     /** diagnostics: why our Wasp is not castable (canPlay / canPayCost, untapped lands) */
     static String waspWhy(Player me) {
         for (Card c : me.getCardsIn(ZoneType.Hand)) {
@@ -173,7 +231,7 @@ public class MetaBrain2 {
                 "azstabilise", "azreserve2", "azcopy", "azdemo", "dragontutor2", "prowesssorc", "dragonprecombat",
                 "holdcounter", "eotflash", "idlecantrip", "noearthbent", "elemfirst",
                 "hastefirst", "sidprotect", "creaturefirst", "hallsafe", "monkpump",
-                "nmlcounter", "flashwait", "fountainlate", "wardpay", "flashbackmana", "waspcombat", "tidehold"})
+                "nmlcounter", "flashwait", "fountainlate", "wardpay", "flashbackmana", "waspcombat", "tidehold", "manasave"})
             if (on(r, p)) return true;
         return false;
     }
