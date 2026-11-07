@@ -265,6 +265,10 @@ public class AiTweaks {
                 SpellAbility f = flashAtEndOfTurn(getPlayer());
                 if (f != null) return by("flasheot", f);
             }
+            if (DimirPlan.on(getPlayer())) {   // dimirplan@NAME (DimirPlan): answers first, against Forest decks only
+                SpellAbility dp = DimirPlan.choose(getPlayer());
+                if (dp != null) return by("dimirplan", dp);
+            }
             if (on("dwarvesetb2", getPlayer())) removalWatch(getPlayer());
             if (on("dwarvesetb", getPlayer()) || on("dwarvesetb2", getPlayer())) {
                 SpellAbility d = dwarvesEtb(getPlayer());
@@ -347,6 +351,7 @@ public class AiTweaks {
             ai = post("spellplan", ai, SpellBrain.any(getPlayer()) ? SpellBrain.post(getPlayer(), ai) : ai);
             ai = post("metaplan", ai, MetaBrain.any(getPlayer()) ? MetaBrain.post(getPlayer(), ai) : ai);
             ai = post("metaplan2", ai, MetaBrain2.any(getPlayer()) ? MetaBrain2.post(getPlayer(), ai) : ai);
+            ai = post("dimirplan", ai, DimirPlan.on(getPlayer()) ? DimirPlan.post(getPlayer(), ai) : ai);
             ai = post("azplan", ai, AzoriusPlan.any(getPlayer()) ? AzoriusPlan.post(getAi(), getPlayer(), ai) : ai);
             ai = post("landorder", ai, LandOrder.on(getPlayer()) ? LandOrder.post(getPlayer(), ai) : ai);
             ai = post("landcolour", ai, LandColour.on(getPlayer()) ? LandColour.post(getPlayer(), ai) : ai);
@@ -442,9 +447,13 @@ public class AiTweaks {
         public void orderAndPlaySimultaneousSa(List<SpellAbility> sas) {
             // D9b stunbig (MetaBrain2): mandatory ETB triggers get their targets here (prepareSingleSa), not in playTrigger;
             // a Drowner/Wasp trigger is aimed by us and put on the stack directly, everything else goes through Forge one by one
-            if (!on("stunbig", getPlayer()) || sas.stream().noneMatch(MetaBrain2::stunKind)) { super.orderAndPlaySimultaneousSa(sas); return; }
+            // dimirplan (DimirPlan.target): Drowner/Wasp on the biggest threat, Tidebinder on the trigger it was cast for
+            boolean dp = DimirPlan.active(getPlayer()) && sas.stream().anyMatch(DimirPlan::ours);
+            if (!dp && (!on("stunbig", getPlayer()) || sas.stream().noneMatch(MetaBrain2::stunKind))) { super.orderAndPlaySimultaneousSa(sas); return; }
             for (SpellAbility sa : orderSimultaneousSa(sas)) {
-                if (MetaBrain2.stunKind(sa) && sa.isTrigger() && !sa.isCopied() && MetaBrain2.stunBig(getPlayer(), sa))
+                if (dp && DimirPlan.ours(sa) && sa.isTrigger() && !sa.isCopied() && DimirPlan.target(getPlayer(), sa))
+                    forge.ai.ComputerUtil.playStack(sa, getPlayer(), getPlayer().getGame());
+                else if (MetaBrain2.stunKind(sa) && sa.isTrigger() && !sa.isCopied() && on("stunbig", getPlayer()) && MetaBrain2.stunBig(getPlayer(), sa))
                     forge.ai.ComputerUtil.playStack(sa, getPlayer(), getPlayer().getGame());
                 else super.orderAndPlaySimultaneousSa(new java.util.ArrayList<>(List.of(sa)));
             }
@@ -476,6 +485,7 @@ public class AiTweaks {
             if (on("freeattack", getPlayer())) MetaBrain2.freeAttack(getPlayer(), combat);   // B5b/S8 (MetaBrain2)
             if (on("smaugattack", getPlayer())) MetaBrain2.smaug(getPlayer(), combat);       // B5c
             if (on("keepblocker", getPlayer())) MetaBrain2.keepBlocker(getPlayer(), combat); // S13b
+            if (DimirPlan.on(getPlayer())) DimirPlan.attack(getPlayer(), combat);
             if (LandfallBrain.v3On(getPlayer())) LandfallBrain.attack3(getPlayer(), combat);
             if (LandfallBrain.f2(getPlayer())) LandfallBrain.lethalAttack(getPlayer(), combat);
             if (on("landseq10", getPlayer())) LandfallBrain.ouroAttack(getPlayer(), combat);
@@ -492,6 +502,7 @@ public class AiTweaks {
                     || on("landseq16", getPlayer())) LandfallBrain.fixBlocks(getPlayer(), combat);
             if (ProwessBrain.P15(getPlayer())) ProwessBrain.noBlock(getPlayer(), combat);
             if (on("chumplethal", getPlayer())) MetaBrain2.chump(getPlayer(), combat);   // D8b/G6/A9 (MetaBrain2)
+            if (DimirPlan.on(getPlayer())) DimirPlan.block(getPlayer(), combat);
             if (on("lftrace", getPlayer()) || on("spelltrace", getPlayer())) LandfallBrain.traceCombat(getPlayer(), "BLOCK", combat);
         }
 
