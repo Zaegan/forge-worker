@@ -54,7 +54,12 @@ import java.util.Set;
  * Counters: dimirplan_* (ControlBrain.count).
  */
 public class DimirPlan {
-    static boolean on(Player p) { return AiTweaks.on("dimirplan", p); }
+    static boolean on(Player p) { return AiTweaks.on("dimirplan", p) || part("ans", p) || part("res", p) || part("opp", p) || part("tgt", p) || part("cmb", p); }
+    /** the planner's parts alone (2026-11-07 smoke: the whole planner lost +2 -9 vs Landfall): dimirans (answers first),
+     *  dimirres (our-turn vetoes), dimiropp (their-turn holds), dimirtgt (targets), dimircmb (attacks, blocks);
+     *  dimirplan = all five */
+    static boolean part(String k, Player p) { return AiTweaks.on("dimir" + k, p); }
+    static boolean has(String k, Player p) { return AiTweaks.on("dimirplan", p) || part(k, p); }
 
     static final String HARM = "Mightform Harmonizer", CHOCO = "Sazh's Chocobo", EXPL = "Icetill Explorer", ASC = "Earthbender Ascension",
             NURS = "Sapling Nursery", TUNNEL = "Escape Tunnel", TIDE = "Tishana's Tidebinder", WASP = "The Wondrous Wasp",
@@ -255,7 +260,7 @@ public class DimirPlan {
     /* ---------------- answers first ---------------- */
 
     static SpellAbility choose(Player me) {
-        if (!active(me)) return null;
+        if (!active(me) || !has("ans", me)) return null;
         Player op = ProwessBrain.opponent(me);
         Game g = me.getGame();
         SpellAbility top = g.getStack().isEmpty() ? null : g.getStack().peekAbility();
@@ -328,8 +333,9 @@ public class DimirPlan {
         boolean ours = MetaBrain2.ourTurn(me);
         PhaseType ph = MetaBrain2.phase(me);
         String n = h.getName();
-        retarget(me, op, pick);
+        if (has("tgt", me)) retarget(me, op, pick);
         if (!ours) {
+            if (!has("opp", me)) return ai;
             if (pick.isSpell() && named(h, TIDE) && ph != PhaseType.END_OF_TURN && tideFor == null) {
                 ControlBrain.count("dimirplan_tide_kept"); return null;
             }
@@ -339,6 +345,7 @@ public class DimirPlan {
             }
             return ai;
         }
+        if (!has("res", me)) return ai;
         Stance s = stance(me, op);
         if ((ph == PhaseType.UPKEEP || ph == PhaseType.DRAW) && s != Stance.LETHAL && !answer(pick, op)) {
             ControlBrain.count("dimirplan_upkeep_held"); return null;   // dps1-B: drawn cards need that mana
@@ -416,7 +423,7 @@ public class DimirPlan {
 
     /** our ETB triggers: Drowner/Wasp on the biggest threat, Tidebinder on the trigger we cast it for (false: Forge's) */
     static boolean target(Player me, SpellAbility sa) {
-        if (!active(me) || sa == null || sa.getHostCard() == null || !sa.usesTargeting()) return false;
+        if (!active(me) || !has("tgt", me) || sa == null || sa.getHostCard() == null || !sa.usesTargeting()) return false;
         Player op = ProwessBrain.opponent(me);
         Card h = sa.getHostCard();
         if (named(h, DROWN) || named(h, WASP)) {
@@ -455,7 +462,7 @@ public class DimirPlan {
     /* ---------------- combat ---------------- */
 
     static void attack(Player me, Combat combat) {
-        if (!active(me)) return;
+        if (!active(me) || !has("cmb", me)) return;
         Player op = ProwessBrain.opponent(me);
         int ours = combat.getAttackers().stream().mapToInt(DimirPlan::power).sum();
         if (ours >= op.getLife()) return;
@@ -501,7 +508,7 @@ public class DimirPlan {
     }
 
     static void block(Player me, Combat combat) {
-        if (!active(me) || combat == null) return;
+        if (!active(me) || !has("cmb", me) || combat == null) return;
         Player op = ProwessBrain.opponent(me);
         List<Card> open = new ArrayList<>();
         int dmg = 0;
