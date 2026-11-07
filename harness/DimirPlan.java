@@ -205,7 +205,10 @@ public class DimirPlan {
         int keep = ProwessBrain.mana(me);
         int burst = incoming(me, op, blockersNext(me, keep), true);
         int base = incoming(me, op, blockersNext(me, keep), false);
-        int survBurst = burst <= 0 ? 99 : burst >= life ? 1 : (life + burst - 1) / burst;
+        // racing taps our attackers: only vigilance creatures and flash creatures held back block their crack-back
+        int vig = (int) me.getCreaturesInPlay().stream().filter(c -> c.hasKeyword(Keyword.VIGILANCE)).count();
+        int raceBurst = incoming(me, op, vig + blockersNext(me, keep) - me.getCreaturesInPlay().size(), true);
+        int survBurst = raceBurst <= 0 ? 99 : raceBurst >= life ? 1 : (life + raceBurst - 1) / raceBurst;
         int clock = ourClock(me, op);
         Stance s;
         if (clock <= 1) s = Stance.LETHAL;
@@ -228,10 +231,12 @@ public class DimirPlan {
         int r = 0;
         boolean tide = hand(me, TIDE), nay = hand(me, NAY), curio = hand(me, CURIO), pierce = hand(me, PIERCE);
         int next = theirManaNext(op);
+        boolean wasp = hand(me, WASP);
         if (tide && (harmonizers(op) > 0 || next >= 3)) r = Math.max(r, 3);
         if (curio && s == Stance.STABILISE && harmonizers(op) > 0) r = Math.max(r, 4);
         if (nay && (next >= 4 || op.getCardsIn(ZoneType.Battlefield).stream().filter(Card::isLand).count() >= 3)) r = Math.max(r, 2);
-        if (r == 0 && pierce && next >= 3) r = 1;
+        if (wasp && harmonizers(op) > 0) r = Math.max(r, 2);
+        if (pierce && next >= 3) r = r >= 3 ? r + 1 : Math.max(r, 1);   // dps1-B: Tidebinder + Pierce (4) before anything else
         return r;
     }
 
@@ -274,6 +279,21 @@ public class DimirPlan {
             return null;
         }
         if (top != null) return null;
+        PhaseType ph = MetaBrain2.phase(me);
+        Combat cb = g.getCombat();
+        if (!MetaBrain2.ourTurn(me) && ph == PhaseType.COMBAT_DECLARE_ATTACKERS && cb != null && !cb.getAttackers().isEmpty()) {
+            int dmg = cb.getAttackers().stream().mapToInt(DimirPlan::power).sum();
+            if (dmg >= 4 || me.getLife() - dmg <= incoming(me, op, 0, true)) {
+                for (String n : new String[]{CURIO, TIDE, DROWN, WASP})
+                    for (SpellAbility sa : MetaBrain.castableHand(me, c -> named(c, n))) { ControlBrain.count("dimirplan_flashblock"); return sa; }
+            }
+        }
+        if (op.getCardsIn(ZoneType.Battlefield).stream().filter(Card::isLand).count() <= 3)
+            for (Card c : op.getCreaturesInPlay()) {
+                if (!named(c, "Llanowar Elves") || op.getCreaturesInPlay().stream().anyMatch(x -> named(x, CHOCO))) continue;
+                for (SpellAbility sa : MetaBrain.castableHand(me, x -> named(x, HEX)))
+                    if (sa.canTarget(c)) { sa.resetTargets(); sa.getTargets().add(c); ControlBrain.count("dimirplan_hexelf"); return sa; }
+            }
         for (Card c : op.getCreaturesInPlay()) {
             if (!named(c, CHOCO) || !hasTriggers(c)) continue;
             for (SpellAbility sa : MetaBrain.castableHand(me, x -> named(x, HEX)))
@@ -320,6 +340,9 @@ public class DimirPlan {
             return ai;
         }
         Stance s = stance(me, op);
+        if ((ph == PhaseType.UPKEEP || ph == PhaseType.DRAW) && s != Stance.LETHAL && !answer(pick, op)) {
+            ControlBrain.count("dimirplan_upkeep_held"); return null;   // dps1-B: drawn cards need that mana
+        }
         if (s == Stance.LETHAL || s == Stance.RACE) return ai;
         boolean ninjutsu = !pick.isSpell() && h.isInZone(ZoneType.Hand) && named(h, KAITO);
         if (ninjutsu) {
