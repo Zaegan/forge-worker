@@ -54,12 +54,19 @@ import java.util.Set;
  * Counters: dimirplan_* (ControlBrain.count).
  */
 public class DimirPlan {
-    static boolean on(Player p) { return AiTweaks.on("dimirplan", p) || part("ans", p) || part("res", p) || part("opp", p) || part("tgt", p) || part("cmb", p); }
+    static boolean on(Player p) { return AiTweaks.on("dimirplan", p) || v3(p) || part("ans", p) || part("res", p) || part("opp", p) || part("tgt", p) || part("cmb", p); }
     /** the planner's parts alone (2026-11-07 smoke: the whole planner lost +2 -9 vs Landfall): dimirans (answers first),
      *  dimirres (our-turn vetoes), dimiropp (their-turn holds), dimirtgt (targets), dimircmb (attacks, blocks);
      *  dimirplan = all five */
     static boolean part(String k, Player p) { return AiTweaks.on("dimir" + k, p); }
-    static boolean has(String k, Player p) { return AiTweaks.on("dimirplan", p) || part(k, p); }
+    static boolean has(String k, Player p) { return AiTweaks.on("dimirplan", p) || part(k, p) || v3(p) && (k.equals("ans") || k.equals("res")); }
+    /** dimirv3 (dab1, 2026-11-07: answers +0.70, our-turn vetoes +0.60, their-turn holds -1.15, targets -1.34, combat
+     *  -2.67): the two helpful parts, re-aimed by the matchup guides (Kyle, RIW "Standard Dimir Midrange Sideboard
+     *  Guide", 2026; Lucas Giggs, mtgdecks "Mono-Green Landfall", 2026-08-29): game one is tempo -- disrupt and close;
+     *  counters for Sapling Nursery (the biggest threat; respect the fourth Forest), Icetill Explorer and Earthbender
+     *  Ascension, not Harmonizer (big creatures are answered later by removal and deathtouch); an early Kaito punishes
+     *  Landfall's slow hands, so he is held only while a Harmonizer is active */
+    static boolean v3(Player p) { return AiTweaks.on("dimirv3", p); }
 
     static final String HARM = "Mightform Harmonizer", CHOCO = "Sazh's Chocobo", EXPL = "Icetill Explorer", ASC = "Earthbender Ascension",
             NURS = "Sapling Nursery", TUNNEL = "Escape Tunnel", TIDE = "Tishana's Tidebinder", WASP = "The Wondrous Wasp",
@@ -218,7 +225,7 @@ public class DimirPlan {
         Stance s;
         if (clock <= 1) s = Stance.LETHAL;
         else if (burst >= life || harmonizers(op) >= 1 && !answerInHand(me)) s = Stance.STABILISE;
-        else if (clock <= survBurst) s = Stance.RACE;
+        else if (clock <= survBurst && (!v3(me) || clock <= 2)) s = Stance.RACE;
         else if (MetaBrain2.boardPower(op) <= 3 && harmonizers(op) == 0
                 && op.getCreaturesInPlay().stream().noneMatch(c -> named(c, CHOCO) && c.getNetPower() > 2)
                 && op.getCardsIn(ZoneType.Battlefield).stream().noneMatch(c -> named(c, ASC) && c.getCounters(forge.game.card.CounterEnumType.QUEST) >= 3))
@@ -231,7 +238,20 @@ public class DimirPlan {
     }
 
     /** mana to keep for the opponent's next turn (0: none) */
+    static int forestCount(Player op) {
+        return (int) op.getCardsIn(ZoneType.Battlefield).stream().filter(c -> c.isLand() && c.getType().hasSubtype("Forest")).count();
+    }
+
     static int reserve(Player me, Player op, Stance s) {
+        if (v3(me)) {
+            if (s == Stance.LETHAL || op.getCardsIn(ZoneType.Hand).isEmpty()) return 0;
+            int r = 0;
+            boolean fourth = forestCount(op) + 1 >= 4;   // their next land drop makes the fourth Forest
+            if (fourth && hand(me, NAY)) r = 2;
+            else if (fourth && hand(me, PIERCE)) r = 1;
+            if (hand(me, TIDE) && harmonizers(op) > 0) r = r == 0 ? 3 : r + 3;
+            return r;
+        }
         if (s == Stance.LETHAL || s == Stance.RACE || op.getCardsIn(ZoneType.Hand).isEmpty() && harmonizers(op) == 0) return 0;
         int r = 0;
         boolean tide = hand(me, TIDE), nay = hand(me, NAY), curio = hand(me, CURIO), pierce = hand(me, PIERCE);
@@ -274,7 +294,7 @@ public class DimirPlan {
                 List<SpellAbility> t = MetaBrain.castableHand(me, c -> named(c, TIDE));
                 if (!t.isEmpty()) { tideFor = top; ControlBrain.count("dimirplan_tide_tunnel"); return t.get(0); }
             }
-            if (top.isSpell() && h != null && COUNTERWORTHY.contains(h.getName()) && theirOpen(op) < 2) {
+            if (top.isSpell() && h != null && COUNTERWORTHY.contains(h.getName()) && !(v3(me) && named(h, HARM)) && theirOpen(op) < 2) {
                 if (!h.isCreature())
                     for (SpellAbility sa : MetaBrain.castableHand(me, c -> named(c, PIERCE)))
                         if (sa.canTarget(top)) { sa.resetTargets(); sa.getTargets().add(top); ControlBrain.count("dimirplan_pierce"); return sa; }
@@ -370,7 +390,7 @@ public class DimirPlan {
         if (answer(pick, op)) return ai;
         int left = ProwessBrain.mana(me) - cost(pick);
         int r = reserve(me, op, s);
-        if (named(h, KAITO) && pick.isSpell() && (s == Stance.STABILISE || harmonizers(op) > 0 || incoming(me, op, 0, true) >= 4)) {
+        if (named(h, KAITO) && pick.isSpell() && (v3(me) ? harmonizers(op) > 0 : s == Stance.STABILISE || harmonizers(op) > 0 || incoming(me, op, 0, true) >= 4)) {
             ControlBrain.count("dimirplan_kaito_held"); return fallback(me, op, s, h, ProwessBrain.mana(me) - r);
         }
         if (named(h, JACE) && pick.isSpell() && (MetaBrain2.boardPower(op) >= 3 || me.getCreaturesInPlay().isEmpty())) {
