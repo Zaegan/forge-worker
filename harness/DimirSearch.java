@@ -416,7 +416,9 @@ public class DimirSearch {
             MyRandom.setRandom(new Random(seed));
             GameSimulator.COPY_STACK = true;
             GameCopier gc = new GameCopier(g);
-            Game s = gc.makeCopy();
+            List<forge.game.staticability.StaticAbility> patched = patchPrepared(g);
+            Game s;
+            try { s = gc.makeCopy(); } finally { unpatch(patched); }
             SIMS.add(s);
             Player sme = s.getPlayer(me.getId()), sop = s.getPlayer(ProwessBrain.opponent(me).getId());
             copyPriority(g, s);
@@ -455,6 +457,34 @@ public class DimirSearch {
             GameSimulator.COPY_STACK = copyStack;
             Statics.restore(saved);
         }
+    }
+
+    static Field ORIGINAL;
+
+    /** Forge 2.0.15's copier drops a command-zone effect's source, so a "prepared" card's may-cast effect (MayPlayPlayer$
+     *  EffectSourceController, Vastlands Scavenger in v2.3) finds no player and the copy fails (dsab1v: 7056 futures).
+     *  For the copy only, the effect names "You" -- the exiled card's controller, the same player. */
+    static List<forge.game.staticability.StaticAbility> patchPrepared(Game g) {
+        List<forge.game.staticability.StaticAbility> out = new ArrayList<>();
+        for (Player p : g.getPlayers())
+            for (Card c : p.getCardsIn(ZoneType.Command))
+                for (forge.game.staticability.StaticAbility st : c.getStaticAbilities())
+                    if ("EffectSourceController".equals(st.getParam("MayPlayPlayer"))) { setPlayer(st, "You"); out.add(st); }
+        return out;
+    }
+
+    static void unpatch(List<forge.game.staticability.StaticAbility> sts) {
+        for (forge.game.staticability.StaticAbility st : sts) setPlayer(st, "EffectSourceController");
+    }
+
+    @SuppressWarnings("unchecked")
+    static void setPlayer(forge.game.staticability.StaticAbility st, String v) {
+        st.putParam("MayPlayPlayer", v);
+        try {
+            if (ORIGINAL == null) { ORIGINAL = forge.game.CardTraitBase.class.getDeclaredField("originalMapParams"); ORIGINAL.setAccessible(true); }
+            Map<String, String> m = (Map<String, String>) ORIGINAL.get(st);
+            if (m != null && m.containsKey("MayPlayPlayer")) m.put("MayPlayPlayer", v);
+        } catch (ReflectiveOperationException | RuntimeException e) { }
     }
 
     /** the opponent's hand comes from its hand and library at random; our library is shuffled */
