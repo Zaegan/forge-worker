@@ -444,8 +444,11 @@ public class DimirSearch {
         } catch (Throwable e) {
             note("dsearch_ferr_" + e.getClass().getSimpleName());
             StackTraceElement[] st = e.getStackTrace();
-            for (int i = 0; i < Math.min(3, st.length); i++)
-                note("dsearch_ferrat" + i + "_" + st[i].getClassName().replaceAll(".*\\.", "") + "." + st[i].getMethodName() + ":" + st[i].getLineNumber());
+            int k = 0;
+            for (int i = 0; i < st.length && k < 6; i++) {
+                if (st[i].getClassName().startsWith("com.google") || st[i].getClassName().startsWith("java.")) continue;
+                note("dsearch_ferrat" + k++ + "_" + st[i].getClassName().replaceAll(".*\\.", "") + "." + st[i].getMethodName() + ":" + st[i].getLineNumber());
+            }
             return Double.NaN;
         } finally {
             MyRandom.setRandom(real);
