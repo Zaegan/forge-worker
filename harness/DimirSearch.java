@@ -375,6 +375,15 @@ public class DimirSearch {
             if (v > fv + MARGIN && (best == forge || v > best.total / best.n)) best = l;
         }
         ControlBrain.count("dsearch_pick_" + window.charAt(0) + "_" + (best == forge ? "FORGE" : best.tag()));
+        if (AiTweaks.on("spelltrace", me)) {   // the spotter's record: every line's value (user 2026-11-07: "better at spotting misplays")
+            StringBuilder b = new StringBuilder("@").append(g.getGameLog().getAllEntries().size()).append(" ").append(LandfallBrain.deckTag(me))
+                    .append(" T").append(ph.getTurn()).append(" ").append(phase).append(" DSEARCH ").append(window.charAt(0)).append(":");
+            for (Line l : lines)
+                b.append(" ").append(l == forge ? "FORGE" : l.tag()).append(l.ref == null ? "" : "(" + l.ref.name + ")")
+                        .append("=").append(l.n == 0 ? "?" : String.format("%.2f", l.total / l.n)).append("/").append(l.n);
+            b.append(" -> ").append(best == forge ? "FORGE" : best.tag() + (best.ref == null ? "" : "(" + best.ref.name + ")"));
+            ControlBrain.trace.append(b).append("\n");
+        }
         if (best == forge) return ai;
         if (best.kind == Kind.HOLD) {
             HELD.put(g, ph.getTurn());
