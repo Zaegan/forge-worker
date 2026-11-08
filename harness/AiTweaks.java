@@ -56,6 +56,7 @@ import java.util.List;
  * dimirfill@NAME — D7, with dimirbetrayal: the held Betrayal's turn casts another spell instead of passing (MetaBrain).
  * monline@NAME — the Eldrazi Monument + Bloodghast line (FetchBrain; implies fetchplay and ghastsac).
  * ghastsac@NAME — when we sacrifice a creature (Eldrazi Monument, edicts), Bloodghast goes first (MetaBrain V1).
+ * dimirsearch@NAME — Dimir's search planner (DimirSearch): each decision's lines played forward in game copies.
  * azplan@NAME — the Azorius turn planner (AzoriusPlan): one mana budget per turn cycle, counter mana kept for the
  *  opponent's turn, card flow at their end step (2026-10-26).
  * azplanres / azplanflow / azplanmain @NAME — the planner's parts alone (2026-10-27): the counter-mana reserve, the
@@ -239,7 +240,10 @@ public class AiTweaks {
             if (LandfallBrain.f1(getPlayer()))
                 try { LandfallBrain.retargetStroke(getPlayer()); } catch (RuntimeException e) { ControlBrain.count("landtunnel_error_" + e.getClass().getSimpleName()); }
             MetaBrain2.manaRelease(getPlayer());
+            List<SpellAbility> f = DimirSearch.pre(getPlayer());   // dimirsearch: a future's forced first action
+            if (f != null) return f.isEmpty() ? null : f;
             List<SpellAbility> r = choose0();
+            if (DimirSearch.on(getPlayer()) || DimirSearch.sim(getGame())) r = DimirSearch.post(getPlayer(), r);   // dimirsearch@NAME (DimirSearch)
             if (on("manasave", getPlayer()) && r != null && !r.isEmpty()) MetaBrain2.manaSave(getPlayer(), r.get(0));   // A14c/D8/B5e
             if (on("spelltrace", getPlayer())) LandfallBrain.trace2(getPlayer(), r, src);
             return r;

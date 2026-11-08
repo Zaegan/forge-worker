@@ -324,7 +324,7 @@ public class MatchGames {
             }, "forge-game");
             t.setDaemon(true);
             java.lang.management.ThreadMXBean mx = java.lang.management.ManagementFactory.getThreadMXBean();
-            long cpuLimit = Math.max(120, timeout) * 1_000_000_000L, wallLimit = 10L * 60 * 1_000_000_000L;   // 10 min: only blocked games get here (busy ones hit the CPU limit)
+            long cpuLimit = Math.max(120, timeout) * 1_000_000_000L, wallLimit = Math.max(600L, 3L * timeout) * 1_000_000_000L;   // 10 min: only blocked games get here (busy ones hit the CPU limit)
             t.start();
             try {
                 while (t.isAlive()) {
